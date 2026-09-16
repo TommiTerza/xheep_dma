@@ -89,6 +89,7 @@ module dma_write_unit
   logic [31:0] dma_dst_d2_inc;
   logic [16:0] dma_dst_cnt_d1;
   logic [16:0] dma_dst_cnt_d2;
+  logic [16:0] dma_dst_cnt_d2_q;
 
   logic [16:0] dma_size_d1;
   logic [16:0] dma_size_d2;
@@ -113,7 +114,6 @@ module dma_write_unit
   /* Sign extension of the increments */
   always_comb begin
     dma_dst_d1_inc = {{26{reg2hw.dst_ptr_inc_d1.q[5]}}, reg2hw.dst_ptr_inc_d1.q};
-    dma_dst_d2_inc = {{9{reg2hw.dst_ptr_inc_d2.q[22]}}, reg2hw.dst_ptr_inc_d2.q};
   end
 
   /* Request signal logic */
@@ -131,7 +131,7 @@ module dma_write_unit
   always_ff @(posedge clk_i or negedge rst_ni) begin : proc_dma_dst_cnt_reg
     if (~rst_ni) begin
       dma_dst_cnt_d1 <= '0;
-      dma_dst_cnt_d2 <= '0;
+      dma_dst_cnt_d2_q <= '0;
       obi_data_req_q <= OBI_DATA_REQ;
       wait_for_tx_state_q <= WAIT_FOR_OUTSTANDING_IDLE;
       slot_wait_counter_q <= '0;
@@ -141,10 +141,10 @@ module dma_write_unit
       slot_wait_counter_q <= slot_wait_counter_d;
       if (dma_start == 1'b1) begin
         dma_dst_cnt_d1 <= dma_size_d1;
-        dma_dst_cnt_d2 <= dma_size_d2;
+        dma_dst_cnt_d2_q <= dma_size_d2;
       end else if (dma_done == 1'b1 || dma_done_override == 1'b1) begin
         dma_dst_cnt_d1 <= '0;
-        dma_dst_cnt_d2 <= '0;
+        dma_dst_cnt_d2_q <= '0;
       end else if ((data_out_gnt && data_out_req)) begin
         if (dma_conf_1d == 1'b1) begin
           // 1D case
@@ -154,7 +154,7 @@ module dma_write_unit
           if (dma_dst_cnt_d1 == 1) begin
             // In this case, the d1 is finished, so we need to reset the d2 size
             dma_dst_cnt_d1 <= dma_size_d1;
-            dma_dst_cnt_d2 <= dma_dst_cnt_d2 - 1;
+            dma_dst_cnt_d2_q <= dma_dst_cnt_d2 - 1;
           end else begin
             // In this case, the d1 isn't finished, so we need to decrement the d1 size
             dma_dst_cnt_d1 <= dma_dst_cnt_d1 - 1;
@@ -357,12 +357,22 @@ module dma_write_unit
   /*_________________________________________________________________________________________________________________________________ */
 
   /* Signal assignments */
+`ifdef DMA_2D_EN
+  assign dma_dst_cnt_d2 = dma_dst_cnt_d2_q;
+`else
+  assign dma_dst_cnt_d2 = '0;
+`endif
   assign data_req_cond_preobi = (write_buffer_empty == 1'b0 && wait_for_tx == 1'b0 && (read_addr_buffer_empty && address_mode) == 1'b0);
   assign data_out_we = 1'b1;
   assign data_out_addr = write_address;
   assign address_mode = reg2hw.mode.q == 2;
+`ifdef DMA_2D_EN
   assign dma_conf_1d = reg2hw.dim_config.q == 0;
   assign dma_conf_2d = reg2hw.dim_config.q == 1;
+`else
+  assign dma_conf_1d = 1'b1;
+  assign dma_conf_2d = 1'b0;
+`endif
 
   /* Write address */
   assign write_address = address_mode ? read_addr_buffer_output_i : write_ptr_reg;
@@ -372,13 +382,22 @@ module dma_write_unit
   assign dma_size_d1 = {1'h0, reg2hw.size_d1.q} +
                       {11'h0, reg2hw.pad_left.q} +
                       {11'h0, reg2hw.pad_right.q};
+`else
+  assign dma_size_d1 = {1'h0, reg2hw.size_d1.q};
+`endif
 
+`ifdef DMA_2D_EN
+  assign dma_dst_d2_inc = {{9{reg2hw.dst_ptr_inc_d2.q[22]}}, reg2hw.dst_ptr_inc_d2.q};
+`ifdef ZERO_PADDING_EN
   assign dma_size_d2 = {1'h0, reg2hw.size_d2.q} +
                       {11'h0, reg2hw.pad_top.q} +
                       {11'h0, reg2hw.pad_bottom.q};
 `else
-  assign dma_size_d1 = {1'h0, reg2hw.size_d1.q};
   assign dma_size_d2 = {1'h0, reg2hw.size_d2.q};
+`endif
+`else
+  assign dma_dst_d2_inc = '0;
+  assign dma_size_d2 = '0;
 `endif
 
   /* Renaming */

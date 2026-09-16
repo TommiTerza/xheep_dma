@@ -44,3 +44,8 @@ lint_off -rule UNUSED -file "*/rtl/dma.sv" -match "Signal is not used: 'dma_proc
 lint_off -rule UNUSED -file "*/rtl/dma.sv" -match "Signal is not used: 'dma_read_unit_done'"
 lint_off -rule UNUSED -file "*/rtl/dma.sv" -match "Signal is not used: 'hw_fifo_mode'"
 lint_off -rule UNUSED -file "*/rtl/dma.sv" -match "Signal is not used: 'hw_fifo_done_i'"
+
+// D2 storage is unobservable and synthesized away when DMA_2D_EN is disabled.
+lint_off -rule UNUSED -file "*/rtl/dma_units/dma_read_unit.sv" -match "Signal is not used: 'dma_src_cnt_d2_q'"
+lint_off -rule UNUSED -file "*/rtl/dma_units/dma_write_unit.sv" -match "Signal is not used: 'dma_dst_cnt_d2_q'"
+lint_off -rule UNUSED -file "*/rtl/dma_units/dma_processing_unit.sv" -match "Signal is not used: 'dma_cnt_d2_q'"
