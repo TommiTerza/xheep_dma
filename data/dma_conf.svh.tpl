@@ -14,6 +14,7 @@
     dma_addr_mode = dma.get_addr_mode()
     dma_zero_padding = dma.get_zero_padding()
     dma_subaddr_mode = dma.get_subaddr_mode()
+    dma_dispatching = getattr(dma, "get_dispatching", lambda: 0)()
     dma_hw_fifo_mode = dma.get_hw_fifo_mode()
 %>
 
@@ -28,4 +29,8 @@
 % endif
 % if dma_hw_fifo_mode:
 `define HW_FIFO_MODE_EN
+% endif
+
+% if dma_dispatching:
+`define DISPATCH_EN
 % endif

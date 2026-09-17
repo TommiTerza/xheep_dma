@@ -5,13 +5,16 @@
  *
  * Author: Tommaso Terzano <tommaso.terzano@epfl.ch>
  *                         <tommaso.terzano@gmail.com>
- *  
+ *
  * Info: Write unit for DMA channel, process data coming out of the output FIFO. Performs the sign extension if needed.
  */
 
 module dma_write_unit
   import dma_reg_pkg::*;
 #(
+    parameter int unsigned EXT_READ_FIFO_ID_NUM = 1,
+    parameter int unsigned EXT_READ_FIFO_ID_BITS =
+        (EXT_READ_FIFO_ID_NUM > 1) ? $clog2(EXT_READ_FIFO_ID_NUM) : 1
 ) (
     input logic clk_i,
     input logic rst_ni,
@@ -30,6 +33,8 @@ module dma_write_unit
 
     input logic [31:0] write_buffer_output_i,
     input logic [31:0] read_addr_buffer_output_i,
+
+    input logic [EXT_READ_FIFO_ID_BITS-1:0] write_fifo_req_id_i,
 
     input logic data_out_gnt_i,
     input logic data_out_rvalid_i,
@@ -62,6 +67,12 @@ module dma_write_unit
   logic dma_conf_2d;
   logic dma_done;
   logic address_mode;
+`ifdef DISPATCH_EN
+  logic circular_mode;
+`else
+  logic unused_write_fifo_req_id;
+  assign unused_write_fifo_req_id = ^write_fifo_req_id_i;
+`endif
   logic dma_start;
 
   enum logic {
@@ -87,8 +98,19 @@ module dma_write_unit
 
   logic [31:0] dma_dst_d1_inc;
   logic [31:0] dma_dst_d2_inc;
+
+`ifdef DISPATCH_EN
+  logic dispatch_en;
+  logic [16:0] dma_dst_cnt_d1_array [EXT_READ_FIFO_ID_NUM-1:0];
+  logic [16:0] dma_dst_cnt_d2_array [EXT_READ_FIFO_ID_NUM-1:0];
+  logic [31:0] write_ptr_reg_array [EXT_READ_FIFO_ID_NUM-1:0];
+  logic [EXT_READ_FIFO_ID_NUM-1:0] dma_done_array;
+  logic [EXT_READ_FIFO_ID_NUM-1:0] dma_dst_cnt_d1_done;
+  logic [EXT_READ_FIFO_ID_NUM-1:0] dma_dst_cnt_d2_done;
+`else
   logic [16:0] dma_dst_cnt_d1;
   logic [16:0] dma_dst_cnt_d2;
+`endif
 
   logic [16:0] dma_size_d1;
   logic [16:0] dma_size_d2;
@@ -120,7 +142,12 @@ module dma_write_unit
   always_comb begin : proc_req_signal_logic
     data_out_req = 0;
 
-    if (dma_write_unit_state == DMA_WRITE_UNIT_ON && dma_done == 1'b0) begin
+    /* Reload completed destinations before accepting the next FIFO entry. */
+    if (dma_write_unit_state == DMA_WRITE_UNIT_ON && dma_done == 1'b0
+`ifdef DISPATCH_EN
+        && !(dispatch_en && circular_mode && |dma_done_array)
+`endif
+    ) begin
       if (data_req_cond == 1'b1) begin
         data_out_req = 1;
       end
@@ -128,6 +155,60 @@ module dma_write_unit
   end
 
   /* Counters for the writing fsm */
+
+`ifdef DISPATCH_EN
+  always_ff @(posedge clk_i or negedge rst_ni) begin : proc_dma_dst_cnt_reg
+    if (~rst_ni) begin
+      for (int i = 0; i < EXT_READ_FIFO_ID_NUM; i++) begin
+        dma_dst_cnt_d1_array[i] <= '0;
+        dma_dst_cnt_d2_array[i] <= '0;
+      end
+
+      obi_data_req_q <= OBI_DATA_REQ;
+      wait_for_tx_state_q <= WAIT_FOR_OUTSTANDING_IDLE;
+      slot_wait_counter_q <= '0;
+    end else begin
+      obi_data_req_q <= obi_data_req_d;
+      wait_for_tx_state_q <= wait_for_tx_state_d;
+      slot_wait_counter_q <= slot_wait_counter_d;
+      if (dma_start == 1'b1) begin
+        for (int i = 0; i < EXT_READ_FIFO_ID_NUM; i++) begin
+          dma_dst_cnt_d1_array[i] <= dma_size_d1;
+          dma_dst_cnt_d2_array[i] <= dma_size_d2;
+        end
+      end else if (dma_done == 1'b1 || dma_done_override == 1'b1) begin
+        // General dma done case
+        for (int i = 0; i < EXT_READ_FIFO_ID_NUM; i++) begin
+          dma_dst_cnt_d1_array[i] <= '0;
+          dma_dst_cnt_d2_array[i] <= '0;
+        end
+      end else if (|dma_done_array && circular_mode && dispatch_en) begin
+        /* Reload the completed IDs, independently of the next FIFO head. */
+        for (int i = 0; i < EXT_READ_FIFO_ID_NUM; i++) begin
+          if (dma_done_array[i]) begin
+            dma_dst_cnt_d1_array[i] <= dma_size_d1;
+            dma_dst_cnt_d2_array[i] <= dma_size_d2;
+          end
+        end
+      end else if ((data_out_gnt && data_out_req)) begin
+        if (dma_conf_1d == 1'b1) begin
+          // 1D case
+          dma_dst_cnt_d1_array[write_fifo_req_id_i] <= dma_dst_cnt_d1_array[write_fifo_req_id_i] - 1;
+        end else if (dma_conf_2d == 1'b1) begin
+          // 2D case
+          if (dma_dst_cnt_d1_array[write_fifo_req_id_i] == 1) begin
+            // In this case, the d1 is finished, so we need to reset the d2 size
+            dma_dst_cnt_d1_array[write_fifo_req_id_i] <= dma_size_d1;
+            dma_dst_cnt_d2_array[write_fifo_req_id_i] <= dma_dst_cnt_d2_array[write_fifo_req_id_i] - 1;
+          end else begin
+            // In this case, the d1 isn't finished, so we need to decrement the d1 size
+            dma_dst_cnt_d1_array[write_fifo_req_id_i] <= dma_dst_cnt_d1_array[write_fifo_req_id_i] - 1;
+          end
+        end
+      end
+    end
+  end
+`else
   always_ff @(posedge clk_i or negedge rst_ni) begin : proc_dma_dst_cnt_reg
     if (~rst_ni) begin
       dma_dst_cnt_d1 <= '0;
@@ -163,6 +244,7 @@ module dma_write_unit
       end
     end
   end
+`endif
 
   /* Determine the byte enable depending on the datatype */
   always_comb begin : proc_byte_enable_out
@@ -191,6 +273,37 @@ module dma_write_unit
   end
 
   /* Store output data pointer and increment everytime write request is granted */
+`ifdef DISPATCH_EN
+  always_ff @(posedge clk_i or negedge rst_ni) begin : proc_ptr_out_reg
+    if (~rst_ni) begin
+      for (int i = 0; i < EXT_READ_FIFO_ID_NUM; i++) begin
+        write_ptr_reg_array[i] <= '0;
+      end
+    end else begin
+      if (dispatch_en && ((|dma_done_array && circular_mode) || dma_start)) begin
+        for (int i = 0; i < EXT_READ_FIFO_ID_NUM; i++) begin
+          if (dma_done_array[i] || dma_start) begin
+            write_ptr_reg_array[i] <= reg2hw.dst_ptr_dispatch[i].q;
+          end
+        end
+      end else if (dma_start == 1'b1) begin
+        write_ptr_reg_array[0] <= reg2hw.dst_ptr.q;
+      end else if ((data_out_gnt && data_out_req)) begin
+        /* Ordinary transfers select ID zero. */
+        if (dma_conf_1d == 1'b1) begin
+          write_ptr_reg_array[write_fifo_req_id_i] <= write_ptr_reg_array[write_fifo_req_id_i] + dma_dst_d1_inc;
+        end else if (dma_conf_2d == 1'b1) begin
+          if (dma_dst_cnt_d1_array[write_fifo_req_id_i] == 1) begin
+            // In this case, the d1 is finished, so we need to increment the pointer by sizeof(d1)*data_unit*strides
+            write_ptr_reg_array[write_fifo_req_id_i] <= write_ptr_reg_array[write_fifo_req_id_i] + dma_dst_d2_inc;
+          end else begin
+            write_ptr_reg_array[write_fifo_req_id_i] <= write_ptr_reg_array[write_fifo_req_id_i] + dma_dst_d1_inc; // Increment just of one du, since we need to increase the 1d
+          end
+        end
+      end
+    end
+  end
+`else
   always_ff @(posedge clk_i or negedge rst_ni) begin : proc_ptr_out_reg
     if (~rst_ni) begin
       write_ptr_reg <= '0;
@@ -211,6 +324,7 @@ module dma_write_unit
       end
     end
   end
+`endif
 
   /* FSM state update */
   always_ff @(posedge clk_i or negedge rst_ni) begin : proc_fsm_state
@@ -222,6 +336,62 @@ module dma_write_unit
   end
 
   /* Write master FSM */
+
+`ifdef DISPATCH_EN
+  always_comb begin : proc_dma_write_unit_logic
+
+    dma_write_unit_n_state = dma_write_unit_state;
+    dma_done = 1'b0;
+
+    for (int i = 0; i < EXT_READ_FIFO_ID_NUM; i++) begin
+      dma_done_array[i] = 1'b0;
+      dma_dst_cnt_d1_done[i] = (dma_dst_cnt_d1_array[i] == '0);
+      dma_dst_cnt_d2_done[i] = (dma_dst_cnt_d2_array[i] == '0);
+    end
+
+    unique case (dma_write_unit_state)
+
+      DMA_WRITE_UNIT_IDLE: begin
+        if (dma_start == 1'b1) begin
+          dma_write_unit_n_state = DMA_WRITE_UNIT_ON;
+        end
+      end
+      DMA_WRITE_UNIT_ON: begin
+        // If all data has been written, exit
+        if (dma_done_override == 1'b0) begin
+          if (dma_conf_1d == 1'b1) begin
+            // 1D DMA case
+            if (|dma_dst_cnt_d1_done == 1'b1) begin
+              dma_done_array = dma_dst_cnt_d1_done;
+
+              if (!(circular_mode && dispatch_en)) begin
+                dma_write_unit_n_state = DMA_WRITE_UNIT_IDLE;
+                dma_done = 1'b1;
+              end
+            end
+          end else if (dma_conf_2d == 1'b1) begin
+            // 2D DMA case: exit only if 2d counter is 0
+            if (|dma_dst_cnt_d2_done == 1'b1) begin
+
+              /* Circular dispatch reloads completed IDs without ending the transfer. */
+              dma_done_array = dma_dst_cnt_d2_done;
+
+              if (!(circular_mode && dispatch_en)) begin
+                dma_write_unit_n_state = DMA_WRITE_UNIT_IDLE;
+                dma_done = 1'b1;
+              end
+            end
+          end
+        end else begin
+          dma_write_unit_n_state = DMA_WRITE_UNIT_IDLE;
+          dma_done = 1'b1;
+        end
+      end
+
+      default: ;
+    endcase
+  end
+`else
   always_comb begin : proc_dma_write_unit_logic
 
     dma_write_unit_n_state = dma_write_unit_state;
@@ -259,6 +429,7 @@ module dma_write_unit
       default: ;
     endcase
   end
+`endif
 
   /* This logic performs the output data shitf to depending on the destination address, i.e. depending on BE */
   always_comb begin
@@ -361,10 +532,17 @@ module dma_write_unit
   assign data_out_we = 1'b1;
   assign data_out_addr = write_address;
   assign address_mode = reg2hw.mode.q == 2;
+`ifdef DISPATCH_EN
+  assign circular_mode = reg2hw.mode.q == 1;
+`endif
   assign dma_conf_1d = reg2hw.dim_config.q == 0;
   assign dma_conf_2d = reg2hw.dim_config.q == 1;
 
   /* Write address */
+`ifdef DISPATCH_EN
+  assign dispatch_en = reg2hw.dispatch_en.q == 1'b1;
+  assign write_ptr_reg = write_ptr_reg_array[write_fifo_req_id_i];
+`endif
   assign write_address = address_mode ? read_addr_buffer_output_i : write_ptr_reg;
 
   /* DMA transaction sizes */

@@ -2,7 +2,7 @@
  * Copyright 2024 EPFL
  * Solderpad Hardware License, Version 2.1, see LICENSE.md for details.
  * SPDX-License-Identifier: Apache-2.0 WITH SHL-2.1
- *  
+ *
  * Info: Direct Memory Access (DMA) channel module.
  */
 
@@ -17,7 +17,10 @@ module dma
     parameter type obi_req_t = logic,
     parameter type obi_resp_t = logic,
     parameter type fifo_resp_t = logic,
-    parameter type fifo_req_t = logic
+    parameter type fifo_req_t = logic,
+    parameter int unsigned EXT_READ_FIFO_ID_NUM = 1,
+    parameter int unsigned EXT_READ_FIFO_ID_BITS =
+        (EXT_READ_FIFO_ID_NUM > 1) ? $clog2(EXT_READ_FIFO_ID_NUM) : 1
 ) (
     input logic clk_i,
     input logic rst_ni,
@@ -49,7 +52,11 @@ module dma
     output logic dma_window_intr_o,
 
     output logic dma_ready_o,
-    output logic dma_done_o
+    output logic dma_done_o,
+
+    input  fifo_req_t ext_read_fifo_req_i,
+    output fifo_resp_t ext_read_fifo_resp_o,
+    input logic [EXT_READ_FIFO_ID_BITS-1:0] ext_read_fifo_req_id_i
 );
 
   `include "dma_conf.svh"
@@ -74,17 +81,35 @@ module dma
   logic dma_write_done_override;
   logic dma_read_done_override;
 
+`ifdef DISPATCH_EN
+  logic [EXT_READ_FIFO_ID_NUM-1:0] window_event;
+  logic [31:0] window_counter [EXT_READ_FIFO_ID_NUM-1:0];
+`else
   logic window_event;
   logic [31:0] window_counter;
+`endif
 
   logic circular_mode;
   logic address_mode;
+`ifdef HW_FIFO_MODE_EN
   logic hw_fifo_mode;
+`else
+  logic unused_hw_fifo_done;
+  assign unused_hw_fifo_done = hw_fifo_done_i;
+`endif
+`ifndef DISPATCH_EN
+  logic unused_ext_read_fifo_req_id;
+  assign unused_ext_read_fifo_req_id = ^ext_read_fifo_req_id_i;
+`endif
+  logic dispatch_en;
 
   /* Buffer signals */
   fifo_req_t read_buffer_req;
   fifo_req_t read_addr_buffer_req;
   fifo_req_t write_buffer_req;
+
+  logic [EXT_READ_FIFO_ID_BITS-1:0] read_fifo_req_id;
+  logic [EXT_READ_FIFO_ID_BITS-1:0] write_fifo_req_id;
 
   fifo_resp_t read_buffer_resp;
   fifo_resp_t read_addr_buffer_resp;
@@ -125,6 +150,7 @@ module dma
 
   /* Buffer unit signals */
   logic general_buffer_flush;
+  logic read_buffer_flush;
 
   logic read_buffer_full;
   logic read_buffer_empty;
@@ -200,6 +226,7 @@ module dma
 
   /* Buffer unit */
   dma_buffer_unit #(
+      .EXT_READ_FIFO_ID_BITS(EXT_READ_FIFO_ID_BITS),
       .FIFO_DEPTH(FIFO_DEPTH),
       .fifo_req_t(fifo_req_t),
       .fifo_resp_t(fifo_resp_t)
@@ -213,7 +240,10 @@ module dma
 
       .read_buffer_req_i(read_buffer_req),
       .read_addr_buffer_req_i(read_addr_buffer_req),
+      .read_fifo_req_id_i(read_fifo_req_id),
+
       .write_buffer_req_i(write_buffer_req),
+      .write_fifo_req_id_o(write_fifo_req_id),
 
       .read_buffer_resp_o(read_buffer_resp),
       .read_addr_buffer_resp_o(read_addr_buffer_resp),
@@ -232,7 +262,7 @@ module dma
 
       .reg2hw_i(reg2hw),
 
-      .dma_start_i(dma_start),
+      .dma_start_i(dma_start && !dispatch_en),
       .dma_done_i(dma_done),
       .dma_done_override_i(dma_read_done_override),
 
@@ -253,7 +283,7 @@ module dma
       .data_in_we_o(data_in_we),
       .data_in_be_o(data_in_be),
       .data_in_addr_o(data_in_addr),
-      .general_buffer_flush_o(general_buffer_flush)
+      .general_buffer_flush_o(read_buffer_flush)
   );
 
   /* Read address unit */
@@ -286,13 +316,17 @@ module dma
 
   /* DMA processing unit */
 `ifdef ZERO_PADDING_EN
+  logic padding_write_push;
+  logic padding_read_pop;
+  logic [31:0] padding_write_data;
+
   dma_processing_unit dma_processing_unit_i (
       .clk_i(clk_cg),
       .rst_ni,
 
       .reg2hw_i(reg2hw),
 
-      .dma_processing_unit_on_i(dma_processing_unit_on),
+      .dma_processing_unit_on_i(dma_processing_unit_on && !dispatch_en),
       .dma_start_i(dma_start),
 
       .read_buffer_empty_i(read_buffer_empty),
@@ -301,11 +335,24 @@ module dma
 
       .read_buffer_output_i(read_buffer_output),
 
-      .write_buffer_push_o(write_buffer_push),
-      .read_buffer_pop_o  (read_buffer_pop),
+      .write_buffer_push_o(padding_write_push),
+      .read_buffer_pop_o  (padding_read_pop),
 
-      .write_buffer_input_o(write_buffer_input)
+      .write_buffer_input_o(padding_write_data)
   );
+
+  /* Dispatch carries one ID per sample and must bypass the global padding counter. */
+  always_comb begin
+    write_buffer_input = padding_write_data;
+    write_buffer_push = padding_write_push;
+    read_buffer_pop = padding_read_pop;
+    if (dispatch_en) begin
+      write_buffer_input = read_buffer_output;
+      write_buffer_push = !read_buffer_empty && !write_buffer_full &&
+                          !write_buffer_alm_full && dma_processing_unit_on;
+      read_buffer_pop = write_buffer_push;
+    end
+  end
 `else
   logic read_buffer_en;
   logic write_buffer_en;
@@ -331,7 +378,10 @@ module dma
 
 
   /* Write unit */
-  dma_write_unit dma_write_unit_i (
+  dma_write_unit #(
+      .EXT_READ_FIFO_ID_NUM(EXT_READ_FIFO_ID_NUM),
+      .EXT_READ_FIFO_ID_BITS(EXT_READ_FIFO_ID_BITS)
+  ) dma_write_unit_i (
       .clk_i(clk_cg),
       .rst_ni,
 
@@ -350,6 +400,8 @@ module dma
 
       .write_buffer_output_i(write_buffer_output),
       .read_addr_buffer_output_i(read_addr_buffer_output),
+
+      .write_fifo_req_id_i(write_fifo_req_id),
 
       .data_out_gnt_i(data_out_gnt),
       .data_out_rvalid_i(data_out_rvalid),
@@ -420,13 +472,15 @@ module dma
   always_ff @(posedge clk_cg, negedge rst_ni) begin : proc_ff_transaction_ifr
     if (~rst_ni) begin
       transaction_ifr <= '0;
-    end else if (reg2hw.interrupt_en.transaction_done.q == 1'b1) begin
-      // Enter here only if the transaction_done interrupt is enabled
-      if (dma_done == 1'b1) begin
-        transaction_ifr <= 1'b1;
-      end else if (reg2hw.transaction_ifr.re == 1'b1) begin
-        // If the IFR bit is read, we must clear the transaction_ifr
-        transaction_ifr <= 1'b0;
+    end else begin
+      if (reg2hw.interrupt_en.transaction_done.q == 1'b1) begin
+        // Enter here only if the transaction_done interrupt is enabled
+        if (dma_done == 1'b1) begin
+          transaction_ifr <= 1'b1;
+        end else if (reg2hw.transaction_ifr.re == 1'b1) begin
+          // If the IFR bit is read, we must clear the transaction_ifr
+          transaction_ifr <= 1'b0;
+        end
       end
     end
   end
@@ -444,13 +498,20 @@ module dma
   always_ff @(posedge clk_cg, negedge rst_ni) begin : proc_ff_window_ifr
     if (~rst_ni) begin
       window_ifr <= '0;
-    end else if (reg2hw.interrupt_en.window_done.q == 1'b1) begin
-      // Enter here only if the window_done interrupt is enabled
-      if (window_event == 1'b1) begin
-        window_ifr <= 1'b1;
-      end else if (reg2hw.window_ifr.re == 1'b1) begin
-        // If the IFR bit is read, we must clear the window_ifr
-        window_ifr <= 1'b0;
+    end else begin
+      if (reg2hw.interrupt_en.window_done.q == 1'b1) begin
+        if (|window_event == 1'b1) begin
+          window_ifr <= 1'b1;
+`ifdef DISPATCH_EN
+        end else if ((dispatch_en && reg2hw.window_id.q == '0) ||
+                     (!dispatch_en && reg2hw.window_ifr.re)) begin
+          /* All pending channel events have been acknowledged. */
+`else
+        end else if (reg2hw.window_ifr.re == 1'b1) begin
+          /* Without dispatch, reading the flag acknowledges the window event. */
+`endif
+          window_ifr <= 1'b0;
+        end
       end
     end
   end
@@ -465,6 +526,33 @@ module dma
   end
 
   /* Window event counter */
+`ifdef DISPATCH_EN
+  always_ff @(posedge clk_cg, negedge rst_ni) begin : proc_dma_window_cnt
+    if (~rst_ni) begin
+      for (int i = 0; i < EXT_READ_FIFO_ID_NUM; i++) begin
+        window_counter[i] <= '0;
+      end
+    end else begin
+      if (|reg2hw.window_size.q) begin
+        if ((dispatch_en && dma_start) || (circular_mode && reg2hw.window_size.qe) || (~circular_mode && (dma_start | dma_done))) begin
+          for (int i = 0; i < EXT_READ_FIFO_ID_NUM; i++) begin
+            window_counter[i] <= '0;
+          end
+        end else if (data_out_gnt && (!dispatch_en || data_out_req)) begin
+          if (window_event[write_fifo_req_id] == 1'b1) begin
+            window_counter[write_fifo_req_id] <= '0;
+          end else begin
+            window_counter[write_fifo_req_id] <= window_counter[write_fifo_req_id] + 'h1;
+          end
+        end
+      end else if (dispatch_en) begin
+        for (int i = 0; i < EXT_READ_FIFO_ID_NUM; i++) begin
+          window_counter[i] <= '0;
+        end
+      end
+    end
+  end
+`else
   always_ff @(posedge clk_cg, negedge rst_ni) begin : proc_dma_window_cnt
     if (~rst_ni) begin
       window_counter <= '0;
@@ -482,6 +570,7 @@ module dma
       end
     end
   end
+`endif
 
   /* Update Processing Unit start signal */
   always_ff @(posedge clk_cg, negedge rst_ni) begin
@@ -545,11 +634,19 @@ module dma
   assign data_out_rvalid = dma_write_resp_i.rvalid;
   assign data_out_rdata = dma_write_resp_i.rdata;
 
+  assign general_buffer_flush = read_buffer_flush || (dispatch_en && dma_start);
+
   /* FIFO signals */
-  assign read_buffer_req.push = data_in_rvalid;
+  assign read_buffer_req.push = dispatch_en ? (ext_read_fifo_req_i.push && !ext_read_fifo_resp_o.full) : data_in_rvalid;
   assign read_buffer_req.pop = read_buffer_pop;
   assign read_buffer_req.flush = general_buffer_flush;
-  assign read_buffer_req.data = read_buffer_input;
+  assign read_buffer_req.data = dispatch_en ? ext_read_fifo_req_i.data : read_buffer_input;
+
+`ifdef DISPATCH_EN
+  assign read_fifo_req_id = ext_read_fifo_req_id_i;
+`else
+  assign read_fifo_req_id = 0;
+`endif
 
   assign read_buffer_empty = read_buffer_resp.empty;
   assign read_buffer_full = read_buffer_resp.full;
@@ -567,7 +664,9 @@ module dma
   assign read_addr_buffer_output = read_addr_buffer_resp.data;
 
   assign write_buffer_req.push = write_buffer_push;
-  assign write_buffer_req.pop = (dma_state_q == DMA_RUNNING) & data_out_gnt;
+  /* An idle OBI grant must not consume a sample during a dispatch reload. */
+  assign write_buffer_req.pop = (dma_state_q == DMA_RUNNING) && data_out_gnt &&
+                                (!dispatch_en || data_out_req);
   assign write_buffer_req.flush = general_buffer_flush;
   assign write_buffer_req.data = write_buffer_input;
 
@@ -576,11 +675,20 @@ module dma
   assign write_buffer_alm_full = write_buffer_resp.alm_full;
   assign write_buffer_output = write_buffer_resp.data;
 
+  /* EXT READ FIFO response signals */
+  assign ext_read_fifo_resp_o.empty = read_buffer_empty;
+  assign ext_read_fifo_resp_o.full = read_buffer_full || !dispatch_en ||
+                                   (dma_state_q != DMA_RUNNING) || dma_done ||
+                                   (int'(ext_read_fifo_req_id_i) >= EXT_READ_FIFO_ID_NUM);
+  assign ext_read_fifo_resp_o.alm_full = read_buffer_alm_full;
+  assign ext_read_fifo_resp_o.data = read_buffer_output;
+
   assign dma_done_intr = transaction_ifr;
   assign dma_done_intr_o = dma_done_intr_n;
   assign dma_window_intr = window_ifr;
   assign dma_window_intr_o = dma_window_intr_n;
 
+  /* hw2reg update logic */
   always_comb begin
     hw2reg = '0;
 
@@ -592,14 +700,27 @@ module dma
     hw2reg.transaction_ifr.d = transaction_ifr;
     hw2reg.window_ifr.d = window_ifr;
     hw2reg.status.ready.d = (dma_state_q == DMA_READY);
-    hw2reg.status.window_done.d = window_event;
+    hw2reg.status.window_done.d = |window_event;
+`ifdef DISPATCH_EN
+    /* Preserve pending IDs until software acknowledges them. */
+    hw2reg.window_id.d = reg2hw.window_id.q | window_event;
+    hw2reg.window_id.de = dispatch_en && |window_event;
+    hw2reg.window_count.d = window_counter[0][7:0];
+`else
     hw2reg.window_count.d = window_counter[7:0];
+`endif
   end
-
 
   assign circular_mode = reg2hw.mode.q == 1;
   assign address_mode = reg2hw.mode.q == 2;
+`ifdef HW_FIFO_MODE_EN
   assign hw_fifo_mode = reg2hw.hw_fifo_en.q;
+`endif
+`ifdef DISPATCH_EN
+  assign dispatch_en = reg2hw.dispatch_en.q;
+`else
+  assign dispatch_en = 1'b0;
+`endif
 
   assign wait_for_rx = |(reg2hw.slot.rx_trigger_slot.q[SLOT_NUM-1:0] & (~trigger_slot_i));
   assign wait_for_tx = |(reg2hw.slot.tx_trigger_slot.q[SLOT_NUM-1:0] & (~trigger_slot_i));
@@ -607,8 +728,14 @@ module dma
   assign enable_wait_for_tx = |(reg2hw.slot.tx_trigger_slot.q[SLOT_NUM-1:0]);
 
   /* Logic for window counter */
-  //TODO: is it really necessary? Do we need to write into a register how many events are done?
-  //      Or do we need only the window donw signal?
+`ifdef DISPATCH_EN
+  for (genvar i = 0; i < EXT_READ_FIFO_ID_NUM; i++) begin : gen_window_event
+    assign window_event[i] = |reg2hw.window_size.q & data_out_gnt & (!dispatch_en || data_out_req) &
+                             (i == write_fifo_req_id) &
+                             (window_counter[i] == {19'h0, reg2hw.window_size.q} - (dispatch_en ? 32'd1 : 32'd0));
+  end
+`else
   assign window_event = |reg2hw.window_size.q & data_out_gnt & (window_counter == {19'h0, reg2hw.window_size.q});
+`endif
 
 endmodule : dma

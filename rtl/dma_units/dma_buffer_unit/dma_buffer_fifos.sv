@@ -14,20 +14,24 @@
 
 module dma_buffer_fifos #(
     parameter int FIFO_DEPTH = 4,
-    // OBI FIFO data types
     parameter type fifo_req_t = logic,
-    parameter type fifo_resp_t = logic
+    parameter type fifo_resp_t = logic,
+    parameter int unsigned EXT_READ_FIFO_ID_BITS = 1
 ) (
     input logic clk_i,
     input logic rst_ni,
 
     input logic hw_fifo_mode_i,
+    input logic dispatch_en_i,
 
     input logic [3:0] read_fifo_pop_i,
 
     input fifo_req_t read_fifo_req_i,
     input fifo_req_t read_addr_fifo_req_i,
+    input logic [EXT_READ_FIFO_ID_BITS-1:0] read_fifo_req_id_i,
+
     input fifo_req_t write_fifo_req_i,
+    output logic [EXT_READ_FIFO_ID_BITS-1:0] write_fifo_req_id_o,
 
     output fifo_resp_t read_fifo_resp_o,
     output fifo_resp_t read_addr_fifo_resp_o,
@@ -52,9 +56,23 @@ module dma_buffer_fifos #(
   logic read_bundle_push;
   logic read_fifo_flush;
 
-  logic hw_fifo_mode;
+`ifdef DISPATCH_EN
+  logic [EXT_READ_FIFO_ID_BITS-1:0] write_fifo_req_id;
+`else
+  logic unused_dispatch_inputs;
+  assign unused_dispatch_inputs = ^{dispatch_en_i, read_fifo_req_id_i};
+`endif
 
+`ifdef ADDR_MODE_EN
   logic [AddrFifoDepth-1:0] read_addr_fifo_usage;
+`else
+  logic unused_read_addr_fifo_req;
+  assign unused_read_addr_fifo_req = ^read_addr_fifo_req_i;
+`endif
+`ifndef HW_FIFO_MODE_EN
+  logic unused_hw_fifo_inputs;
+  assign unused_hw_fifo_inputs = ^{hw_fifo_mode_i, hw_fifo_resp_i};
+`endif
   logic [3:0][AddrFifoDepth-1:0] read_fifo_usage;
   logic [AddrFifoDepth-1:0] write_fifo_usage;
 
@@ -94,6 +112,51 @@ module dma_buffer_fifos #(
                                 (read_fifo_usage[2] == LastFifoUsage[AddrFifoDepth-1:0]) &
                                 (read_fifo_usage[3] == LastFifoUsage[AddrFifoDepth-1:0]);
   endgenerate
+
+  /* Keep IDs aligned with data through both FIFO stages. The ID FIFOs are
+   * inactive for ordinary transfers, including padding and HW FIFO mode. */
+`ifdef DISPATCH_EN
+  logic [EXT_READ_FIFO_ID_BITS-1:0] read_fifo_id;
+
+  fifo_v3 #(
+      .DEPTH(FIFO_DEPTH),
+      .FALL_THROUGH(1'b0),
+      .DATA_WIDTH(EXT_READ_FIFO_ID_BITS)
+  ) dma_read_id_fifo_i (
+      .clk_i,
+      .rst_ni,
+      .flush_i(read_fifo_flush),
+      .testmode_i(1'b0),
+      .full_o(),
+      .empty_o(),
+      .usage_o(),
+      .data_i(read_fifo_req_id_i),
+      .push_i(dispatch_en_i && read_bundle_push),
+      .data_o(read_fifo_id),
+      .pop_i(dispatch_en_i && |read_fifo_pop)
+  );
+
+  fifo_v3 #(
+      .DEPTH(FIFO_DEPTH),
+      .FALL_THROUGH(1'b0),
+      .DATA_WIDTH(EXT_READ_FIFO_ID_BITS)
+  ) dma_write_id_fifo_i (
+      .clk_i,
+      .rst_ni,
+      .flush_i(write_fifo_req.flush),
+      .testmode_i(1'b0),
+      .full_o(),
+      .empty_o(),
+      .usage_o(),
+      .data_i(read_fifo_id),
+      .push_i(dispatch_en_i && write_fifo_req.push),
+      .data_o(write_fifo_req_id),
+      .pop_i(dispatch_en_i && write_fifo_req.pop)
+  );
+
+`else
+  assign write_fifo_req_id_o = 0;
+`endif
 
   /* Generate Read Address Mode FIFOs */
 `ifdef ADDR_MODE_EN
@@ -152,7 +215,7 @@ module dma_buffer_fifos #(
 `ifdef HW_FIFO_MODE_EN
 
   always_comb begin
-    if (hw_fifo_mode) begin
+    if (hw_fifo_mode_i) begin
       hw_fifo_req_o        = write_fifo_req_i;
       write_fifo_resp_o    = hw_fifo_resp_i;
 
@@ -184,6 +247,10 @@ module dma_buffer_fifos #(
 
 `endif
 
+`ifdef DISPATCH_EN
+  assign write_fifo_req_id_o = dispatch_en_i ? write_fifo_req_id : 0;
+`endif
+
   assign read_fifo_pop = read_fifo_pop_i;
   assign read_bundle_push = read_fifo_req_i.push;
   assign read_fifo_flush = read_fifo_req_i.flush;
@@ -193,7 +260,5 @@ module dma_buffer_fifos #(
   assign read_fifo_resp_o.full = read_bundle_full;
   assign read_fifo_resp_o.alm_full = read_bundle_alm_full;
   assign read_fifo_resp_o.empty = read_bundle_empty;
-
-  assign hw_fifo_mode = hw_fifo_mode_i;
 
 endmodule

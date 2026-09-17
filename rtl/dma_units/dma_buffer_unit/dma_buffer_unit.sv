@@ -12,9 +12,9 @@ module dma_buffer_unit
   import dma_reg_pkg::*;
 #(
     parameter int FIFO_DEPTH = 4,
-    // OBI FIFO data types
     parameter type fifo_req_t = logic,
-    parameter type fifo_resp_t = logic
+    parameter type fifo_resp_t = logic,
+    parameter int unsigned EXT_READ_FIFO_ID_BITS = 1
 ) (
     input logic clk_i,
     input logic rst_ni,
@@ -25,7 +25,9 @@ module dma_buffer_unit
 
     input fifo_req_t read_buffer_req_i,
     input fifo_req_t read_addr_buffer_req_i,
+    input logic [EXT_READ_FIFO_ID_BITS-1:0] read_fifo_req_id_i,
     input fifo_req_t write_buffer_req_i,
+    output logic [EXT_READ_FIFO_ID_BITS-1:0] write_fifo_req_id_o,
 
     output fifo_resp_t read_buffer_resp_o,
     output fifo_resp_t read_addr_buffer_resp_o,
@@ -37,6 +39,7 @@ module dma_buffer_unit
   `include "dma_conf.svh"
 
   logic hw_fifo_mode;
+  logic dispatch_en;
 
   fifo_req_t read_fifo_req;
   fifo_resp_t read_fifo_resp;
@@ -49,6 +52,7 @@ module dma_buffer_unit
   logic [31:0] read_buffer_output;
 
   dma_buffer_fifos #(
+      .EXT_READ_FIFO_ID_BITS(EXT_READ_FIFO_ID_BITS),
       .FIFO_DEPTH(FIFO_DEPTH),
       .fifo_req_t(fifo_req_t),
       .fifo_resp_t(fifo_resp_t)
@@ -57,12 +61,15 @@ module dma_buffer_unit
       .rst_ni,
 
       .hw_fifo_mode_i(hw_fifo_mode),
+      .dispatch_en_i(dispatch_en),
 
       .read_fifo_pop_i(read_fifo_pop),
 
       .read_fifo_req_i(read_fifo_req),
       .read_addr_fifo_req_i(read_addr_buffer_req_i),
+      .read_fifo_req_id_i(read_fifo_req_id_i),
       .write_fifo_req_i(write_buffer_req_i),
+      .write_fifo_req_id_o(write_fifo_req_id_o),
 
       .read_fifo_resp_o(read_fifo_resp),
       .read_addr_fifo_resp_o(read_addr_buffer_resp_o),
@@ -89,6 +96,11 @@ module dma_buffer_unit
   );
 
   assign hw_fifo_mode = reg2hw_i.hw_fifo_en.q;
+`ifdef DISPATCH_EN
+  assign dispatch_en = reg2hw_i.dispatch_en.q;
+`else
+  assign dispatch_en = 1'b0;
+`endif
 
   /* Due to the read FIFOs structure, thie pop signal is actually overridden by read_fifo_pop */
   assign read_fifo_req.pop = 1'b0;

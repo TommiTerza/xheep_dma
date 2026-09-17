@@ -6,6 +6,10 @@
   dma = xheep.get_base_peripheral_domain().get_dma()
   dma_addr_mode = dma.get_addr_mode() == 1
   dma_subaddr_mode = dma.get_subaddr_mode() == 1
+  dma_dispatching = getattr(dma, "get_dispatching", lambda: 0)() == 1
+  dma_dispatch_ids = dma.get_ext_read_fifo_id_num() if dma_dispatching else 1
+  if not 1 <= dma_dispatch_ids <= 32:
+    raise ValueError("DMA dispatch requires between 1 and 32 IDs")
   dma_hw_fifo_mode = dma.get_hw_fifo_mode() == 1
   dma_zero_padding = dma.get_zero_padding() == 1
 %>
@@ -16,6 +20,15 @@
     { protocol: "reg_iface", direction: "device" }
   ]
   regwidth: "32"
+  % if dma_dispatching:
+  param_list: [
+    { name: "ExtReadFifoIdNum"
+      desc: '''Number of destination entries used for dispatching mode'''
+      type: "int"
+      default: "${dma_dispatch_ids}"
+    }
+  ]
+  % endif
   registers: [
     { name:     "SRC_PTR"
       desc:     "Input data pointer (word aligned)"
@@ -348,5 +361,40 @@
         { bits: "7:0", name: "SLOT_WAIT_COUNTER", desc: "A counter to wait before submitting the next req when using slots"}
       ]
     }
+    % if dma_dispatching:
+    {
+      name:     "DISPATCH_EN"
+      desc:     '''Enable the dispatching capabilities'''
+      swaccess: "rw"
+      hwaccess: "hro"
+      resval:   0
+      fields: [
+        { bits: "0", name: "DISP_EN", desc: "Enable dispatch"}
+      ]
+    }
+    { multireg: {
+      name: "DST_PTR_DISPATCH",
+      desc: "Array of destination addresses linked with different IDs",
+      count: "ExtReadFifoIdNum",
+      cname: "ENTRY",
+      swaccess: "rw",
+      hwaccess: "hro",
+      compact: false,
+      fields: [
+        { bits: "31:0", name: "ADDR", desc: "Destination addr value", resval: "0" }
+      ]
+      }
+    }
+    {
+      name:     "WINDOW_ID"
+      desc:     '''Frame of the per-channel window event status gathered every time a channel raises a window interrupt'''
+      swaccess: "rw"
+      hwaccess: "hrw"
+      resval:   0
+      fields: [
+        { bits: "${dma_dispatch_ids-1}:0", name: "ID", desc: "Window ID"}
+      ]
+    }
+    % endif
   ]
 }
