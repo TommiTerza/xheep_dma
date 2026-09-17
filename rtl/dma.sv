@@ -61,6 +61,11 @@ module dma
 
   `include "dma_conf.svh"
 
+  initial begin : fifo_depth_check
+    assert (FIFO_DEPTH >= 2)
+    else $error("[dma] FIFO_DEPTH must be at least 2, got %0d.", FIFO_DEPTH);
+  end
+
   /*_________________________________________________________________________________________________________________________________ */
 
   /* Signals declaration */

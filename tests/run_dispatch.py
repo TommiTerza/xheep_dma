@@ -29,10 +29,14 @@ def main():
     common = vendor / 'common_cells'
     registers = vendor / 'register_interface/vendor/lowrisc_opentitan'
     with tempfile.TemporaryDirectory(prefix='dma-dispatch-') as directory:
-        for ids, features in [(0, False), (1, False), (3, False), (3, True), (32, False)]:
-            build = Path(directory) / f'ids{ids}-features{int(features)}'
+        for ids, features, two_d in [
+                (ids, features, two_d)
+                for ids, features in [(0, False), (0, True), (1, False), (3, False), (3, True), (32, False)]
+                for two_d in (False, True)]:
+            build = Path(directory) / f'ids{ids}-features{int(features)}-2d{int(two_d)}'
             build.mkdir()
             dma = SimpleNamespace(
+                get_two_d=lambda: two_d,
                 get_dispatching=lambda: bool(ids), get_ext_read_fifo_id_num=lambda: ids,
                 get_addr_mode=lambda: features, get_subaddr_mode=lambda: features,
                 get_hw_fifo_mode=lambda: features, get_zero_padding=lambda: features)
@@ -61,7 +65,7 @@ def main():
             if not args.lint_only:
                 run([build / 'obj/Vdma_dispatch_tb'], build / 'simulation.log')
             check = 'lint' if args.lint_only else 'simulation'
-            print(f'PASS ({check}): dispatch IDs={ids}, optional features={features}')
+            print(f'PASS ({check}): dispatch IDs={ids}, optional features={features}, 2D={two_d}')
 
 
 if __name__ == '__main__':

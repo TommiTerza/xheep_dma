@@ -160,7 +160,11 @@ module dma_dispatch_tb;
     @(negedge clk);
     assert (writes == 3) else $fatal(1, "Legacy transfer length changed");
 `ifdef DISPATCH_EN
+`ifdef DMA_2D_EN
     for (int phase = 0; phase < 4; phase++) begin
+`else
+    for (int phase = 0; phase < 3; phase++) begin
+`endif
       reset_dma();
       expect_dispatch = 1;
       circular = phase != 0;
@@ -171,9 +175,11 @@ module dma_dispatch_tb;
       end
       write_register(32'(DMA_DST_PTR_INC_D1_OFFSET), 32'(stride));
       write_register(32'(DMA_DST_DATA_TYPE_OFFSET), stride == 2 ? 1 : 0);
+`ifdef DMA_2D_EN
       write_register(32'(DMA_DST_PTR_INC_D2_OFFSET), 32'(stride));
       write_register(32'(DMA_DIM_CONFIG_OFFSET), phase == 3 ? 1 : 0);
       write_register(32'(DMA_SIZE_D2_OFFSET), phase == 3 ? 2 : 0);
+`endif
       write_register(32'(DMA_DISPATCH_EN_OFFSET), 1);
       write_register(32'(DMA_MODE_OFFSET), circular ? 1 : 0);
       write_register(32'(DMA_WINDOW_SIZE_OFFSET), 2);

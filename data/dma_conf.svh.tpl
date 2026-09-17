@@ -18,6 +18,9 @@
     dma_hw_fifo_mode = dma.get_hw_fifo_mode()
 %>
 
+% if dma.get_two_d():
+`define DMA_2D_EN
+% endif
 % if dma_addr_mode:
 `define ADDR_MODE_EN
 % endif

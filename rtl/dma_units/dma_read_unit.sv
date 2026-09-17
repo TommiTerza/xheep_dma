@@ -90,6 +90,7 @@ module dma_read_unit
 
   logic [16:0] dma_src_cnt_d1;
   logic [16:0] dma_src_cnt_d2;
+  logic [16:0] dma_src_cnt_d2_q;
 
   logic [31:0] trsp_src_ptr_reg;
   logic [31:0] read_ptr_reg;
@@ -109,6 +110,7 @@ module dma_read_unit
 
   logic [31:0] dma_src_d1_inc;
   logic [31:0] dma_src_d2_inc;
+  logic [15:0] dma_size_d2;
 
   /* FIFO signals */
   logic [31:0] read_buffer_input;
@@ -130,14 +132,13 @@ module dma_read_unit
   /* Sign extension of the increments */
   always_comb begin
     dma_src_d1_inc = {{26{reg2hw.src_ptr_inc_d1.q[5]}}, reg2hw.src_ptr_inc_d1.q};
-    dma_src_d2_inc = {{9{reg2hw.src_ptr_inc_d2.q[22]}}, reg2hw.src_ptr_inc_d2.q};
   end
 
   /* Counters for the reading fsm */
   always_ff @(posedge clk_i or negedge rst_ni) begin : proc_dma_src_cnt_reg
     if (~rst_ni) begin
       dma_src_cnt_d1 <= '0;
-      dma_src_cnt_d2 <= '0;
+      dma_src_cnt_d2_q <= '0;
       obi_data_req_q <= OBI_DATA_REQ;
       wait_for_rx_state_q <= WAIT_FOR_OUTSTANDING_IDLE;
       slot_wait_counter_q <= '0;
@@ -147,10 +148,10 @@ module dma_read_unit
       slot_wait_counter_q <= slot_wait_counter_d;
       if (dma_start == 1'b1) begin
         dma_src_cnt_d1 <= {1'h0, reg2hw.size_d1.q};
-        dma_src_cnt_d2 <= {1'h0, reg2hw.size_d2.q};
+        dma_src_cnt_d2_q <= {1'h0, dma_size_d2};
       end else if (dma_done_i == 1'b1 || dma_done_override == 1'b1) begin
         dma_src_cnt_d1 <= '0;
-        dma_src_cnt_d2 <= '0;
+        dma_src_cnt_d2_q <= '0;
       end else if (data_in_gnt && data_in_req) begin
         if (dma_conf_1d == 1'b1) begin
           // 1D case
@@ -159,7 +160,7 @@ module dma_read_unit
           // 2D case
           if (dma_src_cnt_d1 == 1) begin
             // In this case, the d1 is finished, so we need to decrement the d2 size and reset the d2 size
-            dma_src_cnt_d2 <= dma_src_cnt_d2 - 1;
+            dma_src_cnt_d2_q <= dma_src_cnt_d2 - 1;
             dma_src_cnt_d1 <= {1'h0, reg2hw.size_d1.q};
           end else begin
             // In this case, the d1 isn't finished, so we need to decrement the d1 size
@@ -342,6 +343,11 @@ module dma_read_unit
   /*_________________________________________________________________________________________________________________________________ */
 
   /* Signal assignments */
+`ifdef DMA_2D_EN
+  assign dma_src_cnt_d2 = dma_src_cnt_d2_q;
+`else
+  assign dma_src_cnt_d2 = '0;
+`endif
   assign sign_ext = reg2hw_i.sign_ext.q;
   assign data_in_we = 0;
   assign data_in_be = 4'b1111;
@@ -423,9 +429,19 @@ module dma_read_unit
   assign buffer_alm_full = read_buffer_alm_full_i;
   assign dma_start = dma_start_i;
   assign dma_done_override = dma_done_override_i;
+`ifdef DMA_2D_EN
   assign read_ptr_update_sel = reg2hw.dim_inv.q;
+  assign dma_size_d2 = reg2hw.size_d2.q;
+  assign dma_src_d2_inc = {{9{reg2hw.src_ptr_inc_d2.q[22]}}, reg2hw.src_ptr_inc_d2.q};
   assign dma_conf_1d = reg2hw.dim_config.q == 0;
   assign dma_conf_2d = reg2hw.dim_config.q == 1;
+`else
+  assign read_ptr_update_sel = 1'b0;
+  assign dma_size_d2 = '0;
+  assign dma_src_d2_inc = '0;
+  assign dma_conf_1d = 1'b1;
+  assign dma_conf_2d = 1'b0;
+`endif
   assign data_in_be_o = data_in_be;
   assign data_in_addr_o = data_in_addr;
   assign data_in_req_o = data_in_req;

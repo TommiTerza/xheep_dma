@@ -11,6 +11,7 @@
   if not 1 <= dma_dispatch_ids <= 32:
     raise ValueError("DMA dispatch requires between 1 and 32 IDs")
   dma_hw_fifo_mode = dma.get_hw_fifo_mode() == 1
+  dma_two_d = dma.get_two_d() == 1
   dma_zero_padding = dma.get_zero_padding() == 1
 %>
 
@@ -66,6 +67,7 @@
         { bits: "15:0", name: "SIZE", desc: "DMA counter D1 and start" }
       ]
     }
+    % if dma_two_d:
     { name:     "SIZE_D2"
       desc:     "Number of elements to copy from, defined with respect to the second dimension"
       swaccess: "rw"
@@ -75,6 +77,7 @@
         { bits: "15:0", name: "SIZE", desc: "DMA counter D2" }
       ]
     }
+    % endif
     { name:     "STATUS"
       desc:     '''Status bits are set to one if a given event occurred'''
       swaccess: "ro"
@@ -100,6 +103,7 @@
         }
       ]
     }
+    % if dma_two_d:
     { name:     "SRC_PTR_INC_D2"
       desc:     "Increment the D2 source pointer every time a word is copied"
       swaccess: "rw"
@@ -113,6 +117,7 @@
         }
       ]
     }
+    % endif
     { name:     "DST_PTR_INC_D1"
       desc:     "Increment the D1 destination pointer every time a word is copied"
       swaccess: "rw"
@@ -125,6 +130,7 @@
         }
       ]
     }
+    % if dma_two_d:
     { name:     "DST_PTR_INC_D2"
       desc:     "Increment the D2 destination pointer every time a word is copied"
       swaccess: "rw"
@@ -137,6 +143,7 @@
         }
       ]
     }
+    % endif
     { name:     "SLOT"
       desc:     '''The DMA will wait for the signal 
                    connected to the selected trigger_slots to be high
@@ -233,6 +240,7 @@
         { bits: "0", name: "HW_FIFO_MODE", desc: "Mode for exploting external stream accelerators"}
       ]
     }
+    % if dma_two_d:
     { name:     "DIM_CONFIG"
       desc:     '''Set the dimensionality of the DMA'''
       swaccess: "rw"
@@ -251,7 +259,9 @@
         { bits: "0", name: "SEL", desc: "DMA dimensionality inversion, used to perform transposition"}
       ]
     }
+    % endif
     % if dma_zero_padding:
+    % if dma_two_d:
     { name:     "PAD_TOP"
       desc:     '''Set the top padding'''
       swaccess: "rw"
@@ -270,6 +280,7 @@
         { bits: "5:0", name: "PAD", desc: "Bottom margin padding (2D)"}
       ]
     }
+    % endif
     { name:     "PAD_RIGHT"
       desc:     '''Set the right padding'''
       swaccess: "rw"
