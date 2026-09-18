@@ -12,6 +12,7 @@
 module dma_read_addr_unit
   import dma_reg_pkg::*;
 #(
+    parameter int unsigned SIZE_D1_WIDTH = 16
 ) (
     input logic clk_i,
     input logic rst_ni,
@@ -67,7 +68,7 @@ module dma_read_addr_unit
 
   logic address_mode;
   logic [31:0] addr_ptr_reg;
-  logic [31:0] dma_addr_cnt;
+  logic [SIZE_D1_WIDTH-1:0] dma_addr_cnt;
 
   /*_________________________________________________________________________________________________________________________________ */
 
@@ -92,7 +93,7 @@ module dma_read_addr_unit
       dma_addr_cnt <= '0;
     end else begin
       if (dma_start == 1'b1 && address_mode) begin
-        dma_addr_cnt <= {16'h0, reg2hw.size_d1.q};
+        dma_addr_cnt <= reg2hw.size_d1.q;
       end else if ((data_addr_in_gnt && data_addr_in_req) && address_mode) begin
         dma_addr_cnt <= dma_addr_cnt - 1;  //address always 32b
       end

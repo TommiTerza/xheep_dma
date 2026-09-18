@@ -14,7 +14,10 @@ module dma_write_unit
 #(
     parameter int unsigned EXT_READ_FIFO_ID_NUM = 1,
     parameter int unsigned EXT_READ_FIFO_ID_BITS =
-        (EXT_READ_FIFO_ID_NUM > 1) ? $clog2(EXT_READ_FIFO_ID_NUM) : 1
+        (EXT_READ_FIFO_ID_NUM > 1) ? $clog2(EXT_READ_FIFO_ID_NUM) : 1,
+    parameter int unsigned D1_COUNT_WIDTH = 16,
+    parameter int unsigned D2_COUNT_WIDTH = 16,
+    parameter int unsigned SLOT_WAIT_COUNTER_WIDTH = 8
 ) (
     input logic clk_i,
     input logic rst_ni,
@@ -24,7 +27,7 @@ module dma_write_unit
     input logic dma_start_i,
     input logic wait_for_tx_i,
     input logic enable_wait_for_tx_i,
-    input logic [7:0] slot_wait_counter_i,
+    input logic [SLOT_WAIT_COUNTER_WIDTH-1:0] slot_wait_counter_i,
 
     input logic dma_done_override_i,
 
@@ -101,20 +104,20 @@ module dma_write_unit
 
 `ifdef DISPATCH_EN
   logic dispatch_en;
-  logic [16:0] dma_dst_cnt_d1_array [EXT_READ_FIFO_ID_NUM-1:0];
-  logic [16:0] dma_dst_cnt_d2_array [EXT_READ_FIFO_ID_NUM-1:0];
+  logic [D1_COUNT_WIDTH-1:0] dma_dst_cnt_d1_array [EXT_READ_FIFO_ID_NUM-1:0];
+  logic [D2_COUNT_WIDTH-1:0] dma_dst_cnt_d2_array [EXT_READ_FIFO_ID_NUM-1:0];
   logic [31:0] write_ptr_reg_array [EXT_READ_FIFO_ID_NUM-1:0];
   logic [EXT_READ_FIFO_ID_NUM-1:0] dma_done_array;
   logic [EXT_READ_FIFO_ID_NUM-1:0] dma_dst_cnt_d1_done;
   logic [EXT_READ_FIFO_ID_NUM-1:0] dma_dst_cnt_d2_done;
 `else
-  logic [16:0] dma_dst_cnt_d1;
-  logic [16:0] dma_dst_cnt_d2;
-  logic [16:0] dma_dst_cnt_d2_q;
+  logic [D1_COUNT_WIDTH-1:0] dma_dst_cnt_d1;
+  logic [D2_COUNT_WIDTH-1:0] dma_dst_cnt_d2;
+  logic [D2_COUNT_WIDTH-1:0] dma_dst_cnt_d2_q;
 `endif
 
-  logic [16:0] dma_size_d1;
-  logic [16:0] dma_size_d2;
+  logic [D1_COUNT_WIDTH-1:0] dma_size_d1;
+  logic [D2_COUNT_WIDTH-1:0] dma_size_d2;
 
   logic wait_for_tx;
 
@@ -127,7 +130,7 @@ module dma_write_unit
 
   dma_pkg::dma_wait_for_state_type_t wait_for_tx_state_q, wait_for_tx_state_d;
 
-  logic [7:0] slot_wait_counter_d, slot_wait_counter_q;
+  logic [SLOT_WAIT_COUNTER_WIDTH-1:0] slot_wait_counter_d, slot_wait_counter_q;
 
   /*_________________________________________________________________________________________________________________________________ */
 
@@ -559,21 +562,21 @@ module dma_write_unit
 
   /* DMA transaction sizes */
 `ifdef ZERO_PADDING_EN
-  assign dma_size_d1 = {1'h0, reg2hw.size_d1.q} +
-                      {11'h0, reg2hw.pad_left.q} +
-                      {11'h0, reg2hw.pad_right.q};
+  assign dma_size_d1 = D1_COUNT_WIDTH'(reg2hw.size_d1.q) +
+                      D1_COUNT_WIDTH'(reg2hw.pad_left.q) +
+                      D1_COUNT_WIDTH'(reg2hw.pad_right.q);
 `else
-  assign dma_size_d1 = {1'h0, reg2hw.size_d1.q};
+  assign dma_size_d1 = D1_COUNT_WIDTH'(reg2hw.size_d1.q);
 `endif
 
 `ifdef DMA_2D_EN
   assign dma_dst_d2_inc = {{9{reg2hw.dst_ptr_inc_d2.q[22]}}, reg2hw.dst_ptr_inc_d2.q};
 `ifdef ZERO_PADDING_EN
-  assign dma_size_d2 = {1'h0, reg2hw.size_d2.q} +
-                      {11'h0, reg2hw.pad_top.q} +
-                      {11'h0, reg2hw.pad_bottom.q};
+  assign dma_size_d2 = D2_COUNT_WIDTH'(reg2hw.size_d2.q) +
+                      D2_COUNT_WIDTH'(reg2hw.pad_top.q) +
+                      D2_COUNT_WIDTH'(reg2hw.pad_bottom.q);
 `else
-  assign dma_size_d2 = {1'h0, reg2hw.size_d2.q};
+  assign dma_size_d2 = D2_COUNT_WIDTH'(reg2hw.size_d2.q);
 `endif
 `else
   assign dma_dst_d2_inc = '0;

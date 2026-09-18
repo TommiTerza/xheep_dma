@@ -20,7 +20,11 @@ module dma
     parameter type fifo_req_t = logic,
     parameter int unsigned EXT_READ_FIFO_ID_NUM = 1,
     parameter int unsigned EXT_READ_FIFO_ID_BITS =
-        (EXT_READ_FIFO_ID_NUM > 1) ? $clog2(EXT_READ_FIFO_ID_NUM) : 1
+        (EXT_READ_FIFO_ID_NUM > 1) ? $clog2(EXT_READ_FIFO_ID_NUM) : 1,
+    parameter int unsigned SIZE_D1_WIDTH = 16,
+    parameter int unsigned SIZE_D2_WIDTH = 16,
+    parameter int unsigned SLOT_MASK_WIDTH = 16,
+    parameter int unsigned SLOT_WAIT_COUNTER_WIDTH = 8
 ) (
     input logic clk_i,
     input logic rst_ni,
@@ -44,7 +48,7 @@ module dma
     input  fifo_resp_t hw_fifo_resp_i,
     output fifo_req_t  hw_fifo_req_o,
 
-    input logic [SLOT_NUM-1:0] trigger_slot_i,
+    input logic [(SLOT_NUM > 0 ? SLOT_NUM : 1)-1:0] trigger_slot_i,
 
     input dma_hw2reg_t external_hw2reg_i,
 
@@ -60,6 +64,33 @@ module dma
 );
 
   `include "dma_conf.svh"
+
+  /* Padding adds at most two 63-element margins to each dimension. */
+`ifdef ZERO_PADDING_EN
+  localparam int unsigned D1CountWidth = $clog2((64'd1 << SIZE_D1_WIDTH) + 126);
+  localparam int unsigned D2CountWidth = $clog2((64'd1 << SIZE_D2_WIDTH) + 126);
+`else
+  localparam int unsigned D1CountWidth = SIZE_D1_WIDTH;
+  localparam int unsigned D2CountWidth = SIZE_D2_WIDTH;
+`endif
+
+  initial begin : size_width_check
+    assert (SIZE_D1_WIDTH >= 1 && SIZE_D1_WIDTH <= 32 &&
+            SIZE_D1_WIDTH == dma_reg_pkg::SizeD1Width)
+    else $fatal(1, "[dma] SIZE_D1_WIDTH must match the generated D1 register width (1..32).");
+    assert (SIZE_D2_WIDTH >= 1 && SIZE_D2_WIDTH <= 32 &&
+            SIZE_D2_WIDTH == dma_reg_pkg::SizeD2Width)
+    else $fatal(1, "[dma] SIZE_D2_WIDTH must match the generated D2 register width (1..32).");
+  end
+
+  initial begin : slot_width_check
+    assert (SLOT_MASK_WIDTH >= 1 && SLOT_MASK_WIDTH <= 16 &&
+            SLOT_MASK_WIDTH == dma_reg_pkg::SlotMaskWidth && SLOT_NUM <= SLOT_MASK_WIDTH)
+    else $fatal(1, "[dma] SLOT_MASK_WIDTH must match the register width (1..16) and cover SLOT_NUM.");
+    assert (SLOT_WAIT_COUNTER_WIDTH >= 1 && SLOT_WAIT_COUNTER_WIDTH <= 32 &&
+            SLOT_WAIT_COUNTER_WIDTH == dma_reg_pkg::SlotWaitCounterWidth)
+    else $fatal(1, "[dma] SLOT_WAIT_COUNTER_WIDTH must match the register width (1..32).");
+  end
 
   initial begin : fifo_depth_check
     assert (FIFO_DEPTH >= 2)
@@ -260,7 +291,10 @@ module dma
 
   /* Read unit */
   dma_read_unit #(
-      .RVALID_FIFO_DEPTH(RVALID_FIFO_DEPTH)
+      .SLOT_WAIT_COUNTER_WIDTH(SLOT_WAIT_COUNTER_WIDTH),
+      .RVALID_FIFO_DEPTH(RVALID_FIFO_DEPTH),
+      .SIZE_D1_WIDTH(SIZE_D1_WIDTH),
+      .SIZE_D2_WIDTH(SIZE_D2_WIDTH)
   ) dma_read_unit_i (
       .clk_i(clk_cg),
       .rst_ni,
@@ -293,7 +327,9 @@ module dma
 
   /* Read address unit */
 `ifdef ADDR_MODE_EN
-  dma_read_addr_unit dma_read_addr_unit_i (
+  dma_read_addr_unit #(
+      .SIZE_D1_WIDTH(SIZE_D1_WIDTH)
+  ) dma_read_addr_unit_i (
       .clk_i(clk_cg),
       .rst_ni,
 
@@ -325,7 +361,11 @@ module dma
   logic padding_read_pop;
   logic [31:0] padding_write_data;
 
-  dma_processing_unit dma_processing_unit_i (
+  dma_processing_unit #(
+      .SIZE_D2_WIDTH(SIZE_D2_WIDTH),
+      .D1_COUNT_WIDTH(D1CountWidth),
+      .D2_COUNT_WIDTH(D2CountWidth)
+  ) dma_processing_unit_i (
       .clk_i(clk_cg),
       .rst_ni,
 
@@ -384,6 +424,9 @@ module dma
 
   /* Write unit */
   dma_write_unit #(
+      .SLOT_WAIT_COUNTER_WIDTH(SLOT_WAIT_COUNTER_WIDTH),
+      .D1_COUNT_WIDTH(D1CountWidth),
+      .D2_COUNT_WIDTH(D2CountWidth),
       .EXT_READ_FIFO_ID_NUM(EXT_READ_FIFO_ID_NUM),
       .EXT_READ_FIFO_ID_BITS(EXT_READ_FIFO_ID_BITS)
   ) dma_write_unit_i (
@@ -727,10 +770,17 @@ module dma
   assign dispatch_en = 1'b0;
 `endif
 
-  assign wait_for_rx = |(reg2hw.slot.rx_trigger_slot.q[SLOT_NUM-1:0] & (~trigger_slot_i));
-  assign wait_for_tx = |(reg2hw.slot.tx_trigger_slot.q[SLOT_NUM-1:0] & (~trigger_slot_i));
-  assign enable_wait_for_rx = |(reg2hw.slot.rx_trigger_slot.q[SLOT_NUM-1:0]);
-  assign enable_wait_for_tx = |(reg2hw.slot.tx_trigger_slot.q[SLOT_NUM-1:0]);
+  if (SLOT_NUM > 0) begin : gen_slots
+    assign wait_for_rx = |(SLOT_NUM'(reg2hw.slot.rx_trigger_slot.q) & (~trigger_slot_i));
+    assign wait_for_tx = |(SLOT_NUM'(reg2hw.slot.tx_trigger_slot.q) & (~trigger_slot_i));
+    assign enable_wait_for_rx = |(SLOT_NUM'(reg2hw.slot.rx_trigger_slot.q));
+    assign enable_wait_for_tx = |(SLOT_NUM'(reg2hw.slot.tx_trigger_slot.q));
+  end else begin : gen_no_slots
+    assign wait_for_rx = 1'b0;
+    assign wait_for_tx = 1'b0;
+    assign enable_wait_for_rx = 1'b0;
+    assign enable_wait_for_tx = 1'b0;
+  end
 
   /* Logic for window counter */
 `ifdef DISPATCH_EN

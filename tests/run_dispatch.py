@@ -23,7 +23,17 @@ def main():
     parser.add_argument('--xheep-root', type=Path, required=True)
     parser.add_argument('--lint-only', action='store_true',
                         help='Check RTL without building or running simulations')
+    parser.add_argument('--size-d1-width', type=int, default=None)
+    parser.add_argument('--size-d2-width', type=int, default=None)
+    parser.add_argument('--slot-mask-width', type=int, default=None)
+    parser.add_argument('--slot-wait-counter-width', type=int, default=None)
+    parser.add_argument('--slot-num', type=int, default=None)
     args = parser.parse_args()
+    width_options = {name: value for name, value in
+                     [('dma_size_d1_width', args.size_d1_width),
+                      ('dma_size_d2_width', args.size_d2_width),
+                      ('dma_slot_mask_width', args.slot_mask_width),
+                      ('dma_slot_wait_counter_width', args.slot_wait_counter_width)] if value is not None}
     root = Path(__file__).resolve().parents[1]
     vendor = args.xheep_root.resolve() / 'hw/vendor/pulp_platform'
     common = vendor / 'common_cells'
@@ -44,7 +54,7 @@ def main():
                                     SimpleNamespace(get_dma=lambda: dma))
             for template, output in [('xheep_dma.hjson.tpl', 'dma.hjson'),
                                      ('dma_conf.svh.tpl', 'dma_conf.svh')]:
-                (build / output).write_text(Template(filename=str(root / 'data' / template)).render(xheep=xheep))
+                (build / output).write_text(Template(filename=str(root / 'data' / template)).render(xheep=xheep, **width_options))
             run(['python3', registers / 'util/regtool.py', '-r', '-t', build,
                  build / 'dma.hjson'], build / 'reggen.log')
             sources = [build / 'dma_reg_pkg.sv', root / 'rtl/dma_pkg.sv',
@@ -54,7 +64,9 @@ def main():
                        root / 'rtl/dma.sv', root / 'tests/dma_dispatch_tb.sv']
             run(['verilator', '--lint-only' if args.lint_only else '--binary',
                  '--timing', '--assert', '-Wno-fatal',
-                 '--top-module', 'dma_dispatch_tb', '-I' + str(build),
+                 '--top-module', 'dma_dispatch_tb',
+                 *([] if args.slot_num is None else [f'-GSLOT_NUM={args.slot_num}']),
+                 '-I' + str(build),
                  '-I' + str(common / 'include'),
                  '-I' + str(vendor / 'register_interface/include'), '--Mdir', build / 'obj', '-j', '2',
                  *sources], build / 'build.log')

@@ -12,6 +12,9 @@
 module dma_processing_unit
   import dma_reg_pkg::*;
 #(
+    parameter int unsigned SIZE_D2_WIDTH = 16,
+    parameter int unsigned D1_COUNT_WIDTH = 17,
+    parameter int unsigned D2_COUNT_WIDTH = 17
 ) (
     input logic clk_i,
     input logic rst_ni,
@@ -57,12 +60,12 @@ module dma_processing_unit
   logic write_buffer_full;
   logic write_buffer_alm_full;
   logic dma_start;
-  logic [16:0] dma_cnt_d1;
-  logic [16:0] dma_cnt_d2;
-  logic [16:0] dma_cnt_d2_q;
+  logic [D1_COUNT_WIDTH-1:0] dma_cnt_d1;
+  logic [D2_COUNT_WIDTH-1:0] dma_cnt_d2;
+  logic [D2_COUNT_WIDTH-1:0] dma_cnt_d2_q;
   logic dma_conf_1d;
   logic dma_conf_2d;
-  logic [15:0] dma_size_d2;
+  logic [SIZE_D2_WIDTH-1:0] dma_size_d2;
   logic [5:0] pad_top, pad_bottom;
 
   /* Padding FSM states */
@@ -227,8 +230,9 @@ module dma_processing_unit
       dma_cnt_d2_q <= '0;
     end else begin
       if (dma_start == 1'b1) begin
-        dma_cnt_d1 <= ({1'h0, reg2hw.size_d1.q} + {11'h0, reg2hw.pad_left.q} + {11'h0, reg2hw.pad_right.q});
-        dma_cnt_d2_q <= {1'h0, dma_size_d2} + {11'h0, pad_top} + {11'h0, pad_bottom};
+        dma_cnt_d1 <= D1_COUNT_WIDTH'(reg2hw.size_d1.q) +
+                      D1_COUNT_WIDTH'(reg2hw.pad_left.q) + D1_COUNT_WIDTH'(reg2hw.pad_right.q);
+        dma_cnt_d2_q <= D2_COUNT_WIDTH'(dma_size_d2) + D2_COUNT_WIDTH'(pad_top) + D2_COUNT_WIDTH'(pad_bottom);
       end else if (processing_unit_done == 1'b1) begin
         dma_cnt_d1 <= '0;
         dma_cnt_d2_q <= '0;
@@ -243,7 +247,8 @@ module dma_processing_unit
           if (dma_cnt_d1 == 1) begin
             // In this case, the d1 is finished, so we need to decrement the d2 size and reset the d2 size
             dma_cnt_d2_q <= dma_cnt_d2 - 1;
-            dma_cnt_d1 <= {1'h0, reg2hw.size_d1.q} + {11'h0, reg2hw.pad_left.q} + {11'h0, reg2hw.pad_right.q};
+            dma_cnt_d1 <= D1_COUNT_WIDTH'(reg2hw.size_d1.q) +
+                          D1_COUNT_WIDTH'(reg2hw.pad_left.q) + D1_COUNT_WIDTH'(reg2hw.pad_right.q);
           end else begin
             // In this case, the d1 isn't finished, so we need to decrement the d1 size
             dma_cnt_d1 <= dma_cnt_d1 - 1;
@@ -298,65 +303,65 @@ module dma_processing_unit
   /* Padding FSM conditions assignments */
   assign idle_to_top_ex = {
     |pad_top == 1'b1 && dma_processing_unit_on_i == 1'b1
-    && !(dma_cnt_d1 == 1 && dma_cnt_d2 == 1 && !({1'h0, reg2hw.size_d1.q} == 1 && {1'h0, dma_size_d2} == 1))
+    && !(dma_cnt_d1 == 1 && dma_cnt_d2 == 1 && !(reg2hw.size_d1.q == 1 && dma_size_d2 == 1))
   };
   assign idle_to_left_ex = {
     |pad_top == 1'b0 && |reg2hw.pad_left.q == 1'b1 && dma_processing_unit_on_i == 1'b1
-    && !(dma_cnt_d1 == 1 && dma_cnt_d2 == 1 && !({1'h0, reg2hw.size_d1.q} == 1 && {1'h0, dma_size_d2} == 1))
+    && !(dma_cnt_d1 == 1 && dma_cnt_d2 == 1 && !(reg2hw.size_d1.q == 1 && dma_size_d2 == 1))
   };
   assign idle_to_right_ex = {
     write_buffer_push_o == 1'b1 && |pad_top == 1'b0 && |reg2hw.pad_left.q == 1'b0 && |reg2hw.pad_right.q == 1'b1
-                      && dma_cnt_d1 == ({11'h0, reg2hw.pad_right.q} + 1)
-    && !(dma_cnt_d1 == 1 && dma_cnt_d2 == 1 && !({1'h0, reg2hw.size_d1.q} == 1 && {1'h0, dma_size_d2} == 1))
-    && !(dma_cnt_d1 == 1 && dma_cnt_d2 == 1 && !({1'h0, reg2hw.size_d1.q} == 1 && {1'h0, dma_size_d2} == 1))
+                      && dma_cnt_d1 == (D1_COUNT_WIDTH'(reg2hw.pad_right.q) + 1)
+    && !(dma_cnt_d1 == 1 && dma_cnt_d2 == 1 && !(reg2hw.size_d1.q == 1 && dma_size_d2 == 1))
+    && !(dma_cnt_d1 == 1 && dma_cnt_d2 == 1 && !(reg2hw.size_d1.q == 1 && dma_size_d2 == 1))
   };
   assign idle_to_bottom_ex = {
     write_buffer_push_o == 1'b1 && |pad_top == 1'b0 && |reg2hw.pad_left.q == 1'b0 && |reg2hw.pad_right.q == 1'b0 && |pad_bottom == 1'b1
-                      && dma_cnt_d2 == ({11'h0, pad_bottom} + 1) && dma_cnt_d1 == 1
-    && !(dma_cnt_d1 == 1 && dma_cnt_d2 == 1 && !({1'h0, reg2hw.size_d1.q} == 1 && {1'h0, dma_size_d2} == 1))
-    && !(dma_cnt_d1 == 1 && dma_cnt_d2 == 1 && !({1'h0, reg2hw.size_d1.q} == 1 && {1'h0, dma_size_d2} == 1))
+                      && dma_cnt_d2 == (D2_COUNT_WIDTH'(pad_bottom) + 1) && dma_cnt_d1 == 1
+    && !(dma_cnt_d1 == 1 && dma_cnt_d2 == 1 && !(reg2hw.size_d1.q == 1 && dma_size_d2 == 1))
+    && !(dma_cnt_d1 == 1 && dma_cnt_d2 == 1 && !(reg2hw.size_d1.q == 1 && dma_size_d2 == 1))
   };
   assign top_ex_to_top_dn = {
-    write_buffer_push_o == 1'b1 && dma_cnt_d2 == ( {1'h0, dma_size_d2} + {11'h0, pad_bottom} + 1) && dma_cnt_d1 == 1 && |reg2hw.pad_left.q == 1'b0
+    write_buffer_push_o == 1'b1 && dma_cnt_d2 == ( D2_COUNT_WIDTH'(dma_size_d2) + D2_COUNT_WIDTH'(pad_bottom) + 1) && dma_cnt_d1 == 1 && |reg2hw.pad_left.q == 1'b0
   };
   assign top_ex_to_left_ex = {
-    write_buffer_push_o == 1'b1 && dma_cnt_d2 == ({1'h0, dma_size_d2} + {11'h0, pad_bottom} + 1) && dma_cnt_d1 == 1 && |reg2hw.pad_left.q == 1'b1
+    write_buffer_push_o == 1'b1 && dma_cnt_d2 == (D2_COUNT_WIDTH'(dma_size_d2) + D2_COUNT_WIDTH'(pad_bottom) + 1) && dma_cnt_d1 == 1 && |reg2hw.pad_left.q == 1'b1
   };
   assign top_dn_to_right_ex = {
-    write_buffer_push_o == 1'b1 && |reg2hw.pad_left.q == 1'b0 && |reg2hw.pad_right.q == 1'b1 && dma_cnt_d1 == ({11'h0, reg2hw.pad_right.q} + 1)
+    write_buffer_push_o == 1'b1 && |reg2hw.pad_left.q == 1'b0 && |reg2hw.pad_right.q == 1'b1 && dma_cnt_d1 == (D1_COUNT_WIDTH'(reg2hw.pad_right.q) + 1)
   };
   assign top_dn_to_bottom_ex = {
-    write_buffer_push_o == 1'b1 && |reg2hw.pad_left.q == 1'b0 && |reg2hw.pad_right.q == 1'b0 && |pad_bottom == 1'b1 && dma_cnt_d2 == ({11'h0, pad_bottom} + 1) && dma_cnt_d1 == 1
+    write_buffer_push_o == 1'b1 && |reg2hw.pad_left.q == 1'b0 && |reg2hw.pad_right.q == 1'b0 && |pad_bottom == 1'b1 && dma_cnt_d2 == (D2_COUNT_WIDTH'(pad_bottom) + 1) && dma_cnt_d1 == 1
   };
   assign top_dn_to_idle = {
     |reg2hw.pad_left.q == 1'b0 && |reg2hw.pad_right.q == 1'b0 && |pad_bottom == 1'b0 && dma_cnt_d2 == 1 && dma_cnt_d1 == 1
   };
   assign left_ex_to_left_dn = {
-    write_buffer_push_o == 1'b1 && dma_cnt_d1 == ({1'h0, reg2hw.size_d1.q} + {11'h0, reg2hw.pad_right.q} + 1)
+    write_buffer_push_o == 1'b1 && dma_cnt_d1 == (D1_COUNT_WIDTH'(reg2hw.size_d1.q) + D1_COUNT_WIDTH'(reg2hw.pad_right.q) + 1)
   };
   assign left_dn_to_left_ex = {
-    dma_conf_2d == 1'b1 && write_buffer_push_o == 1'b1 && dma_cnt_d1 == 1 && dma_cnt_d2 != (1'b1 + {11'h0, pad_bottom}) && |reg2hw.pad_right.q == 1'b0
+    dma_conf_2d == 1'b1 && write_buffer_push_o == 1'b1 && dma_cnt_d1 == 1 && dma_cnt_d2 != (1'b1 + D2_COUNT_WIDTH'(pad_bottom)) && |reg2hw.pad_right.q == 1'b0
   };
   assign left_dn_to_right_ex = {
-    write_buffer_push_o == 1'b1 && |reg2hw.pad_right.q == 1'b1 && dma_cnt_d1 == ({11'h0, reg2hw.pad_right.q} + 1)
+    write_buffer_push_o == 1'b1 && |reg2hw.pad_right.q == 1'b1 && dma_cnt_d1 == (D1_COUNT_WIDTH'(reg2hw.pad_right.q) + 1)
   };
   assign left_dn_to_bottom_ex = {
-    write_buffer_push_o == 1'b1 && |reg2hw.pad_right.q == 1'b0 && |pad_bottom == 1'b1 && dma_cnt_d2 == ({11'h0, pad_bottom} + 1) && dma_cnt_d1 == 1
+    write_buffer_push_o == 1'b1 && |reg2hw.pad_right.q == 1'b0 && |pad_bottom == 1'b1 && dma_cnt_d2 == (D2_COUNT_WIDTH'(pad_bottom) + 1) && dma_cnt_d1 == 1
   };
   assign left_dn_to_idle = {
     |reg2hw.pad_right.q == 1'b0 && |pad_bottom == 1'b0 && (!dma_conf_2d || dma_cnt_d2 == 1) && dma_cnt_d1 == 1
   };
   assign right_ex_to_right_dn = {
-    dma_conf_2d == 1'b1 && write_buffer_push_o == 1'b1 && dma_cnt_d1 == 1 && dma_cnt_d2 != ({11'h0, pad_bottom} + 1) && |reg2hw.pad_left.q == 1'b0
+    dma_conf_2d == 1'b1 && write_buffer_push_o == 1'b1 && dma_cnt_d1 == 1 && dma_cnt_d2 != (D2_COUNT_WIDTH'(pad_bottom) + 1) && |reg2hw.pad_left.q == 1'b0
   };
   assign right_ex_to_left_ex = {
-    dma_conf_2d == 1'b1 && write_buffer_push_o == 1'b1 && dma_cnt_d1 == 1 && dma_cnt_d2 != ({11'h0, pad_bottom} + 1) && |reg2hw.pad_left.q == 1'b1
+    dma_conf_2d == 1'b1 && write_buffer_push_o == 1'b1 && dma_cnt_d1 == 1 && dma_cnt_d2 != (D2_COUNT_WIDTH'(pad_bottom) + 1) && |reg2hw.pad_left.q == 1'b1
   };
   assign right_ex_to_bottom_ex = {
-    write_buffer_push_o == 1'b1 && |pad_bottom == 1'b1 && dma_cnt_d2 == ({11'h0, pad_bottom} + 1) && dma_cnt_d1 == 1
+    write_buffer_push_o == 1'b1 && |pad_bottom == 1'b1 && dma_cnt_d2 == (D2_COUNT_WIDTH'(pad_bottom) + 1) && dma_cnt_d1 == 1
   };
   assign right_dn_to_right_ex = {
-    write_buffer_push_o == 1'b1 && dma_cnt_d1 == ({11'h0, reg2hw.pad_right.q} + 1) && |reg2hw.pad_left.q == 1'b0
+    write_buffer_push_o == 1'b1 && dma_cnt_d1 == (D1_COUNT_WIDTH'(reg2hw.pad_right.q) + 1) && |reg2hw.pad_left.q == 1'b0
   };
   assign right_dn_to_idle = {|pad_bottom == 1'b0 && (!dma_conf_2d || dma_cnt_d2 == 1) && dma_cnt_d1 == 1};
   assign bottom_ex_to_idle = {dma_cnt_d1 == 1 && dma_cnt_d2 == 1 && dma_cnt_d1 == 1};

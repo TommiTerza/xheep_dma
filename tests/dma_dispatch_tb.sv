@@ -1,5 +1,7 @@
 /* Author: Tommaso Terzano <tommaso.terzano@epfl.ch> */
-module dma_dispatch_tb;
+module dma_dispatch_tb #(
+    parameter int unsigned SLOT_NUM = dma_reg_pkg::SlotMaskWidth
+);
   import dma_reg_pkg::*;
   `include "dma_conf.svh"
 `ifdef DISPATCH_EN
@@ -45,6 +47,7 @@ module dma_dispatch_tb;
   fifo_req_t input_req;
   fifo_resp_t input_resp;
   logic [DispatchIdWidth-1:0] input_id;
+  logic [(SLOT_NUM > 0 ? SLOT_NUM : 1)-1:0] trigger_slots = '1;
   logic ready, done, window_irq;
   logic allow_writes = 1;
   logic expect_dispatch = 0;
@@ -54,9 +57,23 @@ module dma_dispatch_tb;
   int transfer_size = 3;
   int stride = 4;
   int cycles = 0;
+  int reads = 0;
+  int source_columns = 0;
+  int source_rows = 1;
+  int padding_columns = 0;
+  int padding_rows = 0;
+  bit check_slot_delay = 0;
+  bit slot_reads = 0;
+  int slot_delay = 0;
+  int last_read_cycle = -1;
+  int last_write_cycle = -1;
 
-  dma #(.EXT_READ_FIFO_ID_NUM(DispatchIdCount), .EXT_READ_FIFO_ID_BITS(DispatchIdWidth),
-        .RVALID_FIFO_DEPTH(4), .SLOT_NUM(1), .reg_req_t(reg_req_t), .reg_rsp_t(reg_rsp_t),
+  dma #(.SIZE_D1_WIDTH(dma_reg_pkg::SizeD1Width),
+        .SIZE_D2_WIDTH(dma_reg_pkg::SizeD2Width),
+        .SLOT_MASK_WIDTH(dma_reg_pkg::SlotMaskWidth),
+        .SLOT_WAIT_COUNTER_WIDTH(dma_reg_pkg::SlotWaitCounterWidth),
+        .EXT_READ_FIFO_ID_NUM(DispatchIdCount), .EXT_READ_FIFO_ID_BITS(DispatchIdWidth),
+        .RVALID_FIFO_DEPTH(4), .SLOT_NUM(SLOT_NUM), .reg_req_t(reg_req_t), .reg_rsp_t(reg_rsp_t),
         .obi_req_t(obi_req_t), .obi_resp_t(obi_resp_t),
         .fifo_req_t(fifo_req_t), .fifo_resp_t(fifo_resp_t)) dut (
     .clk_i(clk), .rst_ni(rst_n), .clk_gate_en_ni(1'b1),
@@ -67,7 +84,7 @@ module dma_dispatch_tb;
     .dma_addr_req_o(addr_req), .dma_addr_resp_i('0),
     .ext_read_fifo_req_i(input_req), .ext_read_fifo_resp_o(input_resp),
     .ext_read_fifo_req_id_i(input_id), .hw_fifo_resp_i('0), .hw_fifo_req_o(),
-    .trigger_slot_i('1), .external_hw2reg_i('0),
+    .trigger_slot_i(trigger_slots), .external_hw2reg_i('0),
     .dma_done_intr_o(), .dma_window_intr_o(window_irq), .dma_ready_o(ready), .dma_done_o(done)
   );
 
@@ -87,6 +104,21 @@ module dma_dispatch_tb;
   end
 
   always @(posedge clk) begin
+    if (rst_n && read_req.req && read_resp.gnt) begin
+      reads++;
+      if (check_slot_delay && slot_reads && last_read_cycle >= 0) begin
+        assert (cycles - last_read_cycle >= slot_delay + (slot_delay == 0 ? 2 : 3))
+          else $fatal(1, "RX slot wait counter expired early");
+      end
+      last_read_cycle = cycles;
+    end
+    if (rst_n && write_req.req && write_resp.gnt) begin
+      if (check_slot_delay && !slot_reads && last_write_cycle >= 0) begin
+        assert (cycles - last_write_cycle >= slot_delay + (slot_delay == 0 ? 2 : 3))
+          else $fatal(1, "TX slot wait counter expired early");
+      end
+      last_write_cycle = cycles;
+    end
     if (rst_n && expect_dispatch) begin
       assert (!read_req.req) else $fatal(1, "Dispatch issued a memory read");
       if (write_req.req && write_resp.gnt) begin
@@ -105,7 +137,17 @@ module dma_dispatch_tb;
       end
     end else if (rst_n && write_req.req && write_resp.gnt) begin
       assert (write_req.addr == 'h8000 + writes * 4) else $fatal(1, "Legacy pointer changed");
-      assert (write_req.wdata == 32'h12345678) else $fatal(1, "Legacy data changed");
+      if (padding_columns != 0 || padding_rows != 0) begin
+        automatic int columns = source_columns + 2 * padding_columns;
+        automatic int row = writes / columns;
+        automatic int column = writes % columns;
+        automatic bit is_padding = row < padding_rows || row >= padding_rows + source_rows ||
+                                   column < padding_columns || column >= padding_columns + source_columns;
+        assert (write_req.wdata == (is_padding ? 32'b0 : 32'h12345678))
+          else $fatal(1, "Wrong padded data at row %0d column %0d", row, column);
+      end else begin
+        assert (write_req.wdata == 32'h12345678) else $fatal(1, "Legacy data changed");
+      end
       writes++;
     end
   end
@@ -142,15 +184,95 @@ module dma_dispatch_tb;
     repeat (3) @(negedge clk);
     rst_n = 1;
     writes = 0;
+    reads = 0;
+    trigger_slots = '1;
+    check_slot_delay = 0;
+    last_read_cycle = -1;
+    last_write_cycle = -1;
+    padding_columns = 0;
+    padding_rows = 0;
     foreach (expected_offset[i]) expected_offset[i] = 0;
   endtask
 
   initial begin
-    #200000;
+    #10000000;
     $fatal(1, "Test timed out");
   end
 
+  task automatic check_slots(input int delay_cycles, input bit rx);
+    reset_dma();
+    check_slot_delay = 1;
+    slot_delay = delay_cycles;
+    slot_reads = rx;
+    trigger_slots = '0;
+    write_register(32'(DMA_DST_PTR_OFFSET), 'h8000);
+    write_register(32'(DMA_SLOT_OFFSET), 1 << ((rx ? 0 : 16) + SLOT_NUM - 1));
+    write_register(32'(DMA_SLOT_WAIT_COUNTER_OFFSET), 32'(delay_cycles));
+    write_register(32'(DMA_SIZE_D1_OFFSET), 3);
+    repeat (8) begin
+      @(negedge clk);
+      assert (!write_req.req && (!rx || !read_req.req)) else $fatal(1, "Inactive slot failed to block DMA");
+    end
+    /* Only the selected highest slot is asserted; other slots must not block. */
+    trigger_slots = (SLOT_NUM > 0 ? SLOT_NUM : 1)'(1 << (SLOT_NUM - 1));
+    wait (done);
+    @(negedge clk);
+    assert (reads == 3 && writes == 3) else $fatal(1, "Wrong slotted transfer length");
+    check_slot_delay = 0;
+  endtask
+
+  task automatic check_size_limits(input bit two_d, padded);
+    reset_dma();
+    source_columns = (1 << SizeD1Width) - 1;
+    source_rows = two_d ? (1 << SizeD2Width) - 1 : 1;
+    padding_columns = padded ? 63 : 0;
+    padding_rows = padded && two_d ? 63 : 0;
+    write_register(32'(DMA_DST_PTR_OFFSET), 'h8000);
+    write_register(32'(DMA_DST_PTR_INC_D1_OFFSET), 4);
+    write_register(32'(DMA_SRC_PTR_INC_D1_OFFSET), 4);
+`ifdef DMA_2D_EN
+    write_register(32'(DMA_DIM_CONFIG_OFFSET), 32'(two_d));
+    write_register(32'(DMA_DST_PTR_INC_D2_OFFSET), 4);
+    write_register(32'(DMA_SRC_PTR_INC_D2_OFFSET), 4);
+    write_register(32'(DMA_SIZE_D2_OFFSET), 32'(source_rows));
+`endif
+`ifdef ZERO_PADDING_EN
+    write_register(32'(DMA_PAD_LEFT_OFFSET), 32'(padding_columns));
+    write_register(32'(DMA_PAD_RIGHT_OFFSET), 32'(padding_columns));
+`ifdef DMA_2D_EN
+    write_register(32'(DMA_PAD_TOP_OFFSET), 32'(padding_rows));
+    write_register(32'(DMA_PAD_BOTTOM_OFFSET), 32'(padding_rows));
+`endif
+`endif
+    write_register(32'(DMA_SIZE_D1_OFFSET), 32'(source_columns));
+    wait (done);
+    @(negedge clk);
+    assert (reads == source_columns * source_rows) else $fatal(1, "Wrong read count at size limit");
+    assert (writes == (source_columns + 2 * padding_columns) * (source_rows + 2 * padding_rows))
+      else $fatal(1, "Wrong write count at size limit");
+    repeat (4) @(negedge clk);
+    assert (ready) else $fatal(1, "DMA did not return to idle");
+  endtask
+
   initial begin
+    if (SLOT_NUM > 0 && SizeD1Width >= 2) begin
+      for (int rx = 0; rx < 2; rx++) begin
+        check_slots(0, 1'(rx));
+        check_slots(SlotWaitCounterWidth <= 8 ? (1 << SlotWaitCounterWidth) - 1 : 3, 1'(rx));
+      end
+    end
+    /* Exercise terminal counts and padding carry bits with bounded simulation time. */
+    if (SizeD1Width <= 16) check_size_limits(0, 0);
+`ifdef DMA_2D_EN
+    if (SizeD1Width <= 8 && SizeD2Width <= 8) check_size_limits(1, 0);
+`endif
+`ifdef ZERO_PADDING_EN
+    if (SizeD1Width <= 8) check_size_limits(0, 1);
+`ifdef DMA_2D_EN
+    if (SizeD1Width <= 8 && SizeD2Width <= 8) check_size_limits(1, 1);
+`endif
+`endif
+    if (SizeD1Width < 2 || SizeD2Width < 2) $finish;
     reset_dma();
     write_register(32'(DMA_DST_PTR_OFFSET), 'h8000);
     write_register(32'(DMA_DST_PTR_INC_D1_OFFSET), 4);

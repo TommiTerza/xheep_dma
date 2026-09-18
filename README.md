@@ -20,6 +20,82 @@ Alternatively, if your project does not rely on FuseSoC, you can use the include
 
 The X-HEEP DMA depends on `pulp-platform.org::common_cells`, so be sure that they are vendored in your project and FuseSoC detects the `common_cells.core` file.
 
+## Transfer size widths
+
+D1 and D2 register widths are independently configurable from 1 to 32 bits,
+with 16-bit defaults. Pass `dma_size_d1_width` and `dma_size_d2_width` when
+rendering `data/xheep_dma.hjson.tpl`, for example:
+
+```python
+Template(filename="data/xheep_dma.hjson.tpl").render(
+    xheep=xheep, dma_size_d1_width=13, dma_size_d2_width=4)
+```
+
+The template also accepts `get_size_d1_width()` and `get_size_d2_width()` on the
+DMA configuration object; explicit template arguments take precedence. Existing
+configuration objects need no changes to retain the defaults. Regenerate the
+register RTL, software headers, and register documentation after changing widths.
+Pass the matching widths to the top-level `dma` instance, as with the dispatch
+parameters:
+
+```systemverilog
+  .SIZE_D1_WIDTH(13),
+  .SIZE_D2_WIDTH(4)
+```
+
+Both top-level parameters default to 16. The top module checks that they match
+the generated register widths and passes the widths to its units. It also derives
+the padding counter widths. `dma_pkg` contains only types.
+
+Sizes remain direct element counts: D1 counts elements per row and D2 counts
+rows. A width of N accepts counts up to `2**N - 1`; zero D1 does not start a
+transfer. Register offsets and the 32-bit register bus remain unchanged.
+For example, 13/4 bits can represent 4,096 words per row and eight rows
+(16 KiB per row, 128 KiB total), but also larger counts up to 8,191/15.
+These widths do not enforce a total byte limit or prevent address wraparound.
+
+Read and address-mode counters use the configured widths. Write and padding
+counters grow only when zero padding is enabled, enough to include two
+63-element margins even for narrow size registers. D2 logic is unused when
+2D support is disabled.
+
+To test a reduced-width configuration, use:
+
+```sh
+python3 tests/run_dispatch.py --xheep-root /path/to/x-heep --size-d1-width 13 --size-d2-width 4
+```
+
+The regression checks maximum counts and, for small dimensions, maximum padding
+on all sides in addition to the dispatch tests. Use 4/3 or 1/1 widths to exercise
+padding carry bits and the smallest supported counters.
+
+## Slot widths
+
+The top-level `dma` parameters `SLOT_MASK_WIDTH` (1–16, default 16) and
+`SLOT_WAIT_COUNTER_WIDTH` (1–32, default 8) configure the RX/TX mask registers
+and the read/write slot wait counters. `SLOT_NUM` remains the number of connected
+trigger inputs and must not exceed `SLOT_MASK_WIDTH`. With `SLOT_NUM=0`, slot
+waiting is disabled and the one-bit placeholder input can be tied low.
+
+Render the register template with matching `dma_slot_mask_width` and
+`dma_slot_wait_counter_width` arguments, then regenerate register RTL and software
+headers. The template also accepts `get_slot_mask_width()` and
+`get_slot_wait_counter_width()` on the DMA configuration object. For example,
+use widths 4 and 3 in both the template and top-level parameters for four-bit
+masks and a wait count of 0–7. No configuration parameters are added to `dma_pkg`.
+
+RX masks still start at bit 0 and TX masks at bit 16. Narrowing masks leaves
+reserved bits between fields; register offsets do not change. Width checks
+reject mismatches between the top-level parameters and generated registers.
+
+```sh
+python3 tests/run_dispatch.py --xheep-root /path/to/x-heep --slot-mask-width 4 --slot-wait-counter-width 3
+```
+
+The regression tests trigger blocking on both ports and zero/maximum waits
+for counters up to eight bits wide.
+Use `--slot-num 0 --lint-only` to check the configuration without trigger inputs.
+
 ## Dispatching
 
 Dispatching is ported from the DMA vendored in `heepokranios`. Enable it through

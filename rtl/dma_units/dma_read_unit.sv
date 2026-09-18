@@ -12,7 +12,10 @@
 module dma_read_unit
   import dma_reg_pkg::*;
 #(
-    parameter int RVALID_FIFO_DEPTH = 1
+    parameter int RVALID_FIFO_DEPTH = 1,
+    parameter int unsigned SIZE_D1_WIDTH = 16,
+    parameter int unsigned SIZE_D2_WIDTH = 16,
+    parameter int unsigned SLOT_WAIT_COUNTER_WIDTH = 8
 ) (
     input logic clk_i,
     input logic rst_ni,
@@ -25,7 +28,7 @@ module dma_read_unit
 
     input logic wait_for_rx_i,
     input logic enable_wait_for_rx_i,
-    input logic [7:0] slot_wait_counter_i,
+    input logic [SLOT_WAIT_COUNTER_WIDTH-1:0] slot_wait_counter_i,
 
     input logic read_buffer_full_i,
     input logic read_buffer_alm_full_i,
@@ -88,9 +91,9 @@ module dma_read_unit
 
   logic subaddr_mode;
 
-  logic [16:0] dma_src_cnt_d1;
-  logic [16:0] dma_src_cnt_d2;
-  logic [16:0] dma_src_cnt_d2_q;
+  logic [SIZE_D1_WIDTH-1:0] dma_src_cnt_d1;
+  logic [SIZE_D2_WIDTH-1:0] dma_src_cnt_d2;
+  logic [SIZE_D2_WIDTH-1:0] dma_src_cnt_d2_q;
 
   logic [31:0] trsp_src_ptr_reg;
   logic [31:0] read_ptr_reg;
@@ -110,7 +113,7 @@ module dma_read_unit
 
   logic [31:0] dma_src_d1_inc;
   logic [31:0] dma_src_d2_inc;
-  logic [15:0] dma_size_d2;
+  logic [SIZE_D2_WIDTH-1:0] dma_size_d2;
 
   /* FIFO signals */
   logic [31:0] read_buffer_input;
@@ -123,7 +126,7 @@ module dma_read_unit
 
   dma_pkg::dma_wait_for_state_type_t wait_for_rx_state_q, wait_for_rx_state_d;
 
-  logic [7:0] slot_wait_counter_d, slot_wait_counter_q;
+  logic [SLOT_WAIT_COUNTER_WIDTH-1:0] slot_wait_counter_d, slot_wait_counter_q;
 
   /*_________________________________________________________________________________________________________________________________ */
 
@@ -147,8 +150,8 @@ module dma_read_unit
       wait_for_rx_state_q <= wait_for_rx_state_d;
       slot_wait_counter_q <= slot_wait_counter_d;
       if (dma_start == 1'b1) begin
-        dma_src_cnt_d1 <= {1'h0, reg2hw.size_d1.q};
-        dma_src_cnt_d2_q <= {1'h0, dma_size_d2};
+        dma_src_cnt_d1 <= reg2hw.size_d1.q;
+        dma_src_cnt_d2_q <= dma_size_d2;
       end else if (dma_done_i == 1'b1 || dma_done_override == 1'b1) begin
         dma_src_cnt_d1 <= '0;
         dma_src_cnt_d2_q <= '0;
@@ -161,7 +164,7 @@ module dma_read_unit
           if (dma_src_cnt_d1 == 1) begin
             // In this case, the d1 is finished, so we need to decrement the d2 size and reset the d2 size
             dma_src_cnt_d2_q <= dma_src_cnt_d2 - 1;
-            dma_src_cnt_d1 <= {1'h0, reg2hw.size_d1.q};
+            dma_src_cnt_d1 <= reg2hw.size_d1.q;
           end else begin
             // In this case, the d1 isn't finished, so we need to decrement the d1 size
             dma_src_cnt_d1 <= dma_src_cnt_d1 - 1;
@@ -262,7 +265,7 @@ module dma_read_unit
             end
           end else if (dma_conf_2d == 1'b1) begin
             // 2D DMA case: exit only if both 1d and 2d counters are at 0
-            if (dma_src_cnt_d1 == {1'h0, reg2hw.size_d1.q} && |dma_src_cnt_d2 == 1'b0) begin
+            if (dma_src_cnt_d1 == reg2hw.size_d1.q && |dma_src_cnt_d2 == 1'b0) begin
               dma_read_unit_n_state = DMA_READ_UNIT_IDLE;
               dma_read_done = 1'b1;
             end

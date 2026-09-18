@@ -11,6 +11,17 @@
   if not 1 <= dma_dispatch_ids <= 32:
     raise ValueError("DMA dispatch requires between 1 and 32 IDs")
   dma_hw_fifo_mode = dma.get_hw_fifo_mode() == 1
+  size_d1_width = context.get('dma_size_d1_width', getattr(dma, 'get_size_d1_width', lambda: 16)())
+  size_d2_width = context.get('dma_size_d2_width', getattr(dma, 'get_size_d2_width', lambda: 16)())
+  for name, width in [('D1', size_d1_width), ('D2', size_d2_width)]:
+    if type(width) is not int or not 1 <= width <= 32:
+      raise ValueError(f"DMA {name} size width must be an integer between 1 and 32")
+  slot_mask_width = context.get('dma_slot_mask_width', getattr(dma, 'get_slot_mask_width', lambda: 16)())
+  slot_wait_counter_width = context.get('dma_slot_wait_counter_width', getattr(dma, 'get_slot_wait_counter_width', lambda: 8)())
+  for name, width, maximum in [('slot mask', slot_mask_width, 16),
+                                ('slot wait counter', slot_wait_counter_width, 32)]:
+    if type(width) is not int or not 1 <= width <= maximum:
+      raise ValueError(f"DMA {name} width must be an integer between 1 and {maximum}")
   dma_two_d = dma.get_two_d() == 1
   dma_zero_padding = dma.get_zero_padding() == 1
 %>
@@ -21,15 +32,35 @@
     { protocol: "reg_iface", direction: "device" }
   ]
   regwidth: "32"
-  % if dma_dispatching:
   param_list: [
+    { name: "SizeD1Width"
+      desc: "Width of the first-dimension element count"
+      type: "int"
+      default: "${size_d1_width}"
+    }
+    { name: "SizeD2Width"
+      desc: "Width of the second-dimension row count"
+      type: "int"
+      default: "${size_d2_width}"
+    }
+    { name: "SlotMaskWidth"
+      desc: "Width of each RX and TX trigger mask"
+      type: "int"
+      default: "${slot_mask_width}"
+    }
+    { name: "SlotWaitCounterWidth"
+      desc: "Width of the slot wait counter"
+      type: "int"
+      default: "${slot_wait_counter_width}"
+    }
+  % if dma_dispatching:
     { name: "ExtReadFifoIdNum"
       desc: '''Number of destination entries used for dispatching mode'''
       type: "int"
       default: "${dma_dispatch_ids}"
     }
-  ]
   % endif
+  ]
   registers: [
     { name:     "SRC_PTR"
       desc:     "Input data pointer (word aligned)"
@@ -62,9 +93,8 @@
       swaccess: "rw"
       hwaccess: "hrw"
       hwqe:     "true" // enable `qe` latched signal of software write pulse
-      // Dimensioned to 16 bits to allow for 64kB transfers on 1D
       fields: [
-        { bits: "15:0", name: "SIZE", desc: "DMA counter D1 and start" }
+        { bits: "${size_d1_width - 1}:0", name: "SIZE", desc: "DMA counter D1 and start" }
       ]
     }
     % if dma_two_d:
@@ -72,9 +102,8 @@
       desc:     "Number of elements to copy from, defined with respect to the second dimension"
       swaccess: "rw"
       hwaccess: "hrw"
-      // Dimensioned to 16 bits to allow for 64kB transfers on 2D
       fields: [
-        { bits: "15:0", name: "SIZE", desc: "DMA counter D2" }
+        { bits: "${size_d2_width - 1}:0", name: "SIZE", desc: "DMA counter D2" }
       ]
     }
     % endif
@@ -152,10 +181,10 @@
       hwaccess: "hrw"
       resval:   0
       fields: [
-        { bits: "15:0", name: "RX_TRIGGER_SLOT"
+        { bits: "${slot_mask_width - 1}:0", name: "RX_TRIGGER_SLOT"
           desc: "Slot selection mask"
         }
-        { bits: "31:16", name: "TX_TRIGGER_SLOT"
+        { bits: "${slot_mask_width + 15}:16", name: "TX_TRIGGER_SLOT"
           desc: "Slot selection mask"
         }
       ]
@@ -369,7 +398,7 @@
       hwaccess: "hrw"
       resval:        0
       fields: [
-        { bits: "7:0", name: "SLOT_WAIT_COUNTER", desc: "A counter to wait before submitting the next req when using slots"}
+        { bits: "${slot_wait_counter_width - 1}:0", name: "SLOT_WAIT_COUNTER", desc: "A counter to wait before submitting the next req when using slots"}
       ]
     }
     % if dma_dispatching:
